@@ -37,6 +37,48 @@ struct VideoRenderView: NSViewRepresentable {
     }
 }
 
+/// Renders the full unzoomed remote frame for the zoom minimap. It reuses
+/// `SampleBufferDisplayView` (default scale 1 / center 0.5 → identity transform,
+/// i.e. the whole frame) and feeds off the coordinator's separate minimap
+/// channel, so it never evicts the main viewer display.
+struct MinimapVideoRenderView: NSViewRepresentable {
+    let renderCoordinator: SampleBufferRenderCoordinator
+
+    /// The minimap is at most `MinimapView.maxSize` (200 pt) on its longest side;
+    /// at up to 2× Retina that is 400 px. Capping the `.directLatestFrame` CPU
+    /// frame at this size avoids duplicating the main display's full-resolution
+    /// per-frame copy just to render a thumbnail.
+    private static let maxPixelDimension: CGFloat = 400
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(renderCoordinator: renderCoordinator)
+    }
+
+    func makeNSView(context: Context) -> SampleBufferDisplayView {
+        let view = SampleBufferDisplayView()
+        view.display.directFrameMaxDimension = Self.maxPixelDimension
+        context.coordinator.renderCoordinator.attachMinimap(display: view.display)
+        return view
+    }
+
+    func updateNSView(_ nsView: SampleBufferDisplayView, context: Context) {
+        nsView.display.directFrameMaxDimension = Self.maxPixelDimension
+        context.coordinator.renderCoordinator.attachMinimap(display: nsView.display)
+    }
+
+    static func dismantleNSView(_ nsView: SampleBufferDisplayView, coordinator: Coordinator) {
+        coordinator.renderCoordinator.detachMinimap(display: nsView.display)
+    }
+
+    final class Coordinator {
+        let renderCoordinator: SampleBufferRenderCoordinator
+
+        init(renderCoordinator: SampleBufferRenderCoordinator) {
+            self.renderCoordinator = renderCoordinator
+        }
+    }
+}
+
 final class SampleBufferDisplayView: NSView {
     let display = SampleBufferDisplay()
     private var currentScale: CGFloat = 1.0

@@ -115,7 +115,9 @@ struct ViewerView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            MinimapView(zoom: model.zoom)
+            MinimapView(zoom: model.zoom) {
+                MinimapVideoRenderView(renderCoordinator: model.renderCoordinator)
+            }
                 .padding(12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                 .allowsHitTesting(false)

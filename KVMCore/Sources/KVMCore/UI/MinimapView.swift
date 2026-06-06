@@ -1,20 +1,26 @@
 import SwiftUI
 
-public struct MinimapView: View {
-    public static let maxSize: CGFloat = 200
-    public static let minSize: CGFloat = 80
+public struct MinimapView<Background: View>: View {
+    public static var maxSize: CGFloat { 200 }
+    public static var minSize: CGFloat { 80 }
 
     @ObservedObject private var zoom: ViewerZoomState
+    private let background: Background
 
-    public init(zoom: ViewerZoomState) {
+    public init(zoom: ViewerZoomState, @ViewBuilder background: () -> Background) {
         self.zoom = zoom
+        self.background = background()
     }
 
     public var body: some View {
         if zoom.isZoomed, let size = outerSize {
             ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.black.opacity(0.55))
+                background
+                    .frame(width: size.width, height: size.height)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                dimOutside(in: size)
+
                 RoundedRectangle(cornerRadius: 4)
                     .strokeBorder(Color.white.opacity(0.5), lineWidth: 1)
 
@@ -43,19 +49,34 @@ public struct MinimapView: View {
         return CGSize(width: width, height: height)
     }
 
+    /// Dims everything *outside* the visible viewport so the live video shows
+    /// through the in-view region at full brightness. An even-odd fill of
+    /// (full box) ∪ (visible rect) covers only the surrounding area.
+    private func dimOutside(in size: CGSize) -> some View {
+        let rect = viewportFrame(in: size)
+        return Path { path in
+            path.addRect(CGRect(origin: .zero, size: size))
+            path.addRect(rect)
+        }
+        .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true))
+    }
+
     private func viewportRect(in size: CGSize) -> some View {
+        let rect = viewportFrame(in: size)
+        return Rectangle()
+            .strokeBorder(Color.white, lineWidth: 1.5)
+            .frame(width: rect.width, height: rect.height)
+            .offset(x: rect.minX, y: rect.minY)
+    }
+
+    private func viewportFrame(in size: CGSize) -> CGRect {
         let visible = zoom.visibleRect()
-        let rect = CGRect(
+        return CGRect(
             x: visible.minX * size.width,
             y: visible.minY * size.height,
             width: visible.width * size.width,
             height: visible.height * size.height
         )
-        return Rectangle()
-            .strokeBorder(Color.white, lineWidth: 1.5)
-            .background(Color.white.opacity(0.12))
-            .frame(width: rect.width, height: rect.height)
-            .offset(x: rect.minX, y: rect.minY)
     }
 
     @ViewBuilder

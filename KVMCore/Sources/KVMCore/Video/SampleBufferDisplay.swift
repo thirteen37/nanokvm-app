@@ -1,12 +1,29 @@
+import Accelerate
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
 import Foundation
 import QuartzCore
 
-public final class SampleBufferDisplay {
+/// The render sink the coordinator fans frames out to. A protocol so tests can
+/// substitute an inspectable fake for the real `AVSampleBufferDisplayLayer`-backed
+/// `SampleBufferDisplay`.
+public protocol SampleBufferDisplaying: AnyObject {
+    func enqueue(_ sampleBuffer: CMSampleBuffer, renderMode: SampleBufferRenderMode)
+    func flush()
+}
+
+public final class SampleBufferDisplay: SampleBufferDisplaying {
     public let layer: CALayer
     private let sampleLayer: AVSampleBufferDisplayLayer
     private var enqueuedCount = 0
+
+    /// When set, frames rendered through the `.directLatestFrame` (CPU) path are
+    /// downscaled so their longest side is at most this many pixels before the
+    /// `CGImage` is built. The minimap sets this so it pays a small (~target²)
+    /// allocation instead of duplicating the main display's full-resolution
+    /// (e.g. ~33 MB at 4K) per-frame copy. `nil` (the default, used by the main
+    /// display) keeps full resolution.
+    public var directFrameMaxDimension: CGFloat?
 
     public init() {
         layer = CALayer()
@@ -70,7 +87,7 @@ public final class SampleBufferDisplay {
 
     private func enqueueDirectFrame(_ sampleBuffer: CMSampleBuffer) {
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        guard let cgImage = makeOpaqueImage(from: imageBuffer) else { return }
+        guard let cgImage = makeOpaqueImage(from: imageBuffer, maxDimension: directFrameMaxDimension) else { return }
         enqueuedCount += 1
         if enqueuedCount == 1 || enqueuedCount % 120 == 0 {
             KVMLog.video.info("Direct frame display count: \(self.enqueuedCount, privacy: .public)")
@@ -92,27 +109,51 @@ public final class SampleBufferDisplay {
         }
     }
 
-    private func makeOpaqueImage(from pixelBuffer: CVImageBuffer) -> CGImage? {
+    private func makeOpaqueImage(from pixelBuffer: CVImageBuffer, maxDimension: CGFloat?) -> CGImage? {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         guard width > 0, height > 0 else { return nil }
+
+        let target = Self.targetSize(sourceWidth: width, sourceHeight: height, maxDimension: maxDimension)
+        let destinationBytesPerRow = target.width * 4
 
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
         guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
         let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        let destinationBytesPerRow = width * 4
-        var data = Data(count: destinationBytesPerRow * height)
+        var data = Data(count: destinationBytesPerRow * target.height)
 
-        data.withUnsafeMutableBytes { destination in
-            guard let destinationBase = destination.baseAddress else { return }
-            for row in 0..<height {
-                let source = baseAddress.advanced(by: row * sourceBytesPerRow)
-                let rowDestination = destinationBase.advanced(by: row * destinationBytesPerRow)
-                memcpy(rowDestination, source, destinationBytesPerRow)
+        let copied = data.withUnsafeMutableBytes { destination -> Bool in
+            guard let destinationBase = destination.baseAddress else { return false }
+            if target.width == width, target.height == height {
+                // Full resolution: strip any row padding with a straight per-row copy.
+                for row in 0..<height {
+                    let source = baseAddress.advanced(by: row * sourceBytesPerRow)
+                    let rowDestination = destinationBase.advanced(by: row * destinationBytesPerRow)
+                    memcpy(rowDestination, source, destinationBytesPerRow)
+                }
+                return true
             }
+            // Downscale. vImage scales row-for-row in the same top-down order as
+            // the source, so the resulting image matches the full-resolution path's
+            // orientation exactly (a CoreGraphics draw would risk a vertical flip).
+            var source = vImage_Buffer(
+                data: baseAddress,
+                height: vImagePixelCount(height),
+                width: vImagePixelCount(width),
+                rowBytes: sourceBytesPerRow
+            )
+            var dest = vImage_Buffer(
+                data: destinationBase,
+                height: vImagePixelCount(target.height),
+                width: vImagePixelCount(target.width),
+                rowBytes: destinationBytesPerRow
+            )
+            let error = vImageScale_ARGB8888(&source, &dest, nil, vImage_Flags(kvImageHighQualityResampling))
+            return error == kvImageNoError
         }
+        guard copied else { return nil }
 
         let bitmapInfo = CGBitmapInfo.byteOrder32Little.union(
             CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue)
@@ -120,8 +161,8 @@ public final class SampleBufferDisplay {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let provider = CGDataProvider(data: data as CFData) else { return nil }
         return CGImage(
-            width: width,
-            height: height,
+            width: target.width,
+            height: target.height,
             bitsPerComponent: 8,
             bitsPerPixel: 32,
             bytesPerRow: destinationBytesPerRow,
@@ -132,6 +173,20 @@ public final class SampleBufferDisplay {
             shouldInterpolate: true,
             intent: .defaultIntent
         )
+    }
+
+    /// Fits `(sourceWidth, sourceHeight)` within `maxDimension` on its longest
+    /// side, preserving aspect ratio. Returns the source size unchanged when
+    /// `maxDimension` is nil/non-positive or the source already fits (never
+    /// upscales).
+    static func targetSize(sourceWidth: Int, sourceHeight: Int, maxDimension: CGFloat?) -> (width: Int, height: Int) {
+        guard let maxDimension, maxDimension > 0 else { return (sourceWidth, sourceHeight) }
+        let longest = CGFloat(max(sourceWidth, sourceHeight))
+        guard longest > maxDimension else { return (sourceWidth, sourceHeight) }
+        let scale = maxDimension / longest
+        let width = max(1, Int((CGFloat(sourceWidth) * scale).rounded()))
+        let height = max(1, Int((CGFloat(sourceHeight) * scale).rounded()))
+        return (width, height)
     }
 
     public func flush() {
@@ -161,7 +216,12 @@ public enum SampleBufferRenderMode: Sendable {
 public final class SampleBufferRenderCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private let renderMode: SampleBufferRenderMode
-    private weak var display: SampleBufferDisplay?
+    private weak var display: (any SampleBufferDisplaying)?
+    private weak var minimapDisplay: (any SampleBufferDisplaying)?
+    /// The most recent *accepted* frame, retained so a minimap attaching mid-stream
+    /// (or while the host screen is static) can be seeded immediately instead of
+    /// staying black until the next frame arrives.
+    private var lastSampleBuffer: CMSampleBuffer?
     private var lastPresentationTime: CMTime?
     private var sampleObserver: (@Sendable (CMSampleBuffer) -> Void)?
 
@@ -173,7 +233,7 @@ public final class SampleBufferRenderCoordinator: @unchecked Sendable {
         self.renderMode = renderMode
     }
 
-    public func attach(display: SampleBufferDisplay) {
+    public func attach(display: any SampleBufferDisplaying) {
         lock.lock()
         let displayChanged = self.display !== display
         if displayChanged {
@@ -187,11 +247,39 @@ public final class SampleBufferRenderCoordinator: @unchecked Sendable {
         }
     }
 
-    public func detach(display: SampleBufferDisplay) {
+    public func detach(display: any SampleBufferDisplaying) {
         lock.lock()
         if self.display === display {
             self.display = nil
             lastPresentationTime = nil
+        }
+        lock.unlock()
+    }
+
+    /// Attaches a secondary "minimap" display fed the same frames as the main
+    /// `display`. This is a separate channel: attaching it must NOT evict the
+    /// main display. On a fresh attach the minimap is seeded with the last
+    /// accepted frame so it shows content immediately on a static host screen.
+    public func attachMinimap(display: any SampleBufferDisplaying) {
+        lock.lock()
+        let changed = self.minimapDisplay !== display
+        if changed {
+            self.minimapDisplay = display
+        }
+        let seed = lastSampleBuffer
+        lock.unlock()
+
+        guard changed else { return }
+        display.flush()
+        if let seed {
+            display.enqueue(seed, renderMode: renderMode)
+        }
+    }
+
+    public func detachMinimap(display: any SampleBufferDisplaying) {
+        lock.lock()
+        if self.minimapDisplay === display {
+            self.minimapDisplay = nil
         }
         lock.unlock()
     }
@@ -207,11 +295,14 @@ public final class SampleBufferRenderCoordinator: @unchecked Sendable {
             return
         }
         lastPresentationTime = presentationTime
+        lastSampleBuffer = sampleBuffer
         let display = display
+        let minimapDisplay = minimapDisplay
         lock.unlock()
 
         observer?(sampleBuffer)
         display?.enqueue(sampleBuffer, renderMode: renderMode)
+        minimapDisplay?.enqueue(sampleBuffer, renderMode: renderMode)
     }
 
     /// Installs an observer that fires for every sample buffer the coordinator
@@ -227,10 +318,13 @@ public final class SampleBufferRenderCoordinator: @unchecked Sendable {
     public func flush() {
         lock.lock()
         lastPresentationTime = nil
+        lastSampleBuffer = nil
         let display = display
+        let minimapDisplay = minimapDisplay
         lock.unlock()
 
         display?.flush()
+        minimapDisplay?.flush()
     }
 
     private func shouldAccept(presentationTime: CMTime) -> Bool {
