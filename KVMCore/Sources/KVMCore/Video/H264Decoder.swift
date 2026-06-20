@@ -23,6 +23,75 @@ public enum H264DecoderError: Error, LocalizedError {
 
 private let invalidParameterStatus = OSStatus(-50)
 
+/// An optional correction applied during H.264 decode to fix mismatched color
+/// signaling.
+///
+/// The GLKVM's PiKVM/uStreamer-style V4L2 encoder emits genuine **studio/limited
+/// range** luma (black ≈ 16, white ≈ 235) flagged `video_full_range_flag = 0`.
+/// On this display path the limited→full expansion is not applied at render time,
+/// so white (235) shows at 92% and black (16) at 6% — milky blacks, dim whites.
+///
+/// VideoToolbox does not rescale this stream (forcing a full-range output buffer
+/// only relabels it), so the fix is to tag the decoded buffer explicitly as
+/// limited-range BT.709 (`signaledFullRange = false` plus the matrix/primaries/
+/// transfer) and route it through `FullRangeVideoExpander`
+/// (`expandToFullRangeForDisplay = true`), which uses Core Image to perform the
+/// studio→full expansion in float on the GPU. `nil` (the default, used by
+/// NanoKVM) leaves the SPS-derived description and the video-range output
+/// untouched.
+public struct H264ColorOverride: Sendable {
+    /// Stamps `kCMFormatDescriptionExtension_FullRangeVideo` on the format
+    /// description, i.e. the input range VideoToolbox assumes when scaling.
+    /// `false` = limited/video range. `nil` leaves whatever the SPS signaled.
+    public var signaledFullRange: Bool?
+    /// Forces `kCMFormatDescriptionExtension_YCbCrMatrix`, e.g. `kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2`.
+    public var ycbcrMatrix: CFString?
+    /// Forces `kCMFormatDescriptionExtension_ColorPrimaries`, e.g. `kCMFormatDescriptionColorPrimaries_ITU_R_709_2`.
+    public var colorPrimaries: CFString?
+    /// Forces `kCMFormatDescriptionExtension_TransferFunction`, e.g. `kCMFormatDescriptionTransferFunction_ITU_R_709_2`.
+    public var transferFunction: CFString?
+    /// When `true`, each decoded frame is routed through `FullRangeVideoExpander`,
+    /// which uses Core Image to expand the studio-range YCbCr to full-range RGB for
+    /// display. Needed because this display path renders YCbCr as full-range
+    /// identity and never applies the studio→full expansion itself.
+    public var expandToFullRangeForDisplay: Bool
+    /// The studio luma level mapped to true black during expansion. The standard
+    /// studio black is 16; raising it (e.g. to 20) crushes the lifted near-black
+    /// levels some encoders emit, for blacker blacks. Only used when
+    /// `expandToFullRangeForDisplay` is `true`.
+    public var studioBlackPoint: Int
+
+    public init(
+        signaledFullRange: Bool? = nil,
+        ycbcrMatrix: CFString? = nil,
+        colorPrimaries: CFString? = nil,
+        transferFunction: CFString? = nil,
+        expandToFullRangeForDisplay: Bool = false,
+        studioBlackPoint: Int = 16
+    ) {
+        self.signaledFullRange = signaledFullRange
+        self.ycbcrMatrix = ycbcrMatrix
+        self.colorPrimaries = colorPrimaries
+        self.transferFunction = transferFunction
+        self.expandToFullRangeForDisplay = expandToFullRangeForDisplay
+        self.studioBlackPoint = studioBlackPoint
+    }
+
+    /// Correction for the GLKVM stream: its V4L2/uStreamer encoder emits genuine
+    /// studio-range BT.709 luma and chroma with a slightly lifted black floor.
+    /// Explicitly tag the decoded buffer limited-range BT.709 so Core Image
+    /// expands it correctly, route it through the full-range expander, and crush
+    /// the lifted black floor so blacks, whites, and saturation render correctly.
+    public static let glkvm = H264ColorOverride(
+        signaledFullRange: false,
+        ycbcrMatrix: kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2,
+        colorPrimaries: kCMFormatDescriptionColorPrimaries_ITU_R_709_2,
+        transferFunction: kCMFormatDescriptionTransferFunction_ITU_R_709_2,
+        expandToFullRangeForDisplay: true,
+        studioBlackPoint: 20
+    )
+}
+
 enum H264FrameContinuityAction: Equatable {
     case decode
     case decodeThroughDiscontinuity
@@ -58,9 +127,18 @@ public final class H264Decoder: @unchecked Sendable {
     private var formatDescription: CMVideoFormatDescription?
     private var decompressionSession: VTDecompressionSession?
     private var continuityGate = H264FrameContinuityGate()
+    private let colorOverride: H264ColorOverride?
+    private let fullRangeExpander: FullRangeVideoExpander?
     private let output: @Sendable (CMSampleBuffer) -> Void
 
-    public init(output: @escaping @Sendable (CMSampleBuffer) -> Void) {
+    public init(
+        colorOverride: H264ColorOverride? = nil,
+        output: @escaping @Sendable (CMSampleBuffer) -> Void
+    ) {
+        self.colorOverride = colorOverride
+        self.fullRangeExpander = colorOverride?.expandToFullRangeForDisplay == true
+            ? FullRangeVideoExpander(studioBlackPoint: colorOverride?.studioBlackPoint ?? 16)
+            : nil
         self.output = output
     }
 
@@ -176,6 +254,9 @@ public final class H264Decoder: @unchecked Sendable {
             throw H264DecoderError.formatDescription(formatStatus)
         }
 
+        let sessionFormatDescription = Self.applyingColorOverride(colorOverride, to: newFormatDescription)
+            ?? newFormatDescription
+
         var callbackRecord = VTDecompressionOutputCallbackRecord(
             decompressionOutputCallback: decompressionOutputCallback,
             decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque()
@@ -186,7 +267,7 @@ public final class H264Decoder: @unchecked Sendable {
         var newSession: VTDecompressionSession?
         let sessionStatus = VTDecompressionSessionCreate(
             allocator: kCFAllocatorDefault,
-            formatDescription: newFormatDescription,
+            formatDescription: sessionFormatDescription,
             decoderSpecification: nil,
             imageBufferAttributes: imageBufferAttributes as CFDictionary,
             outputCallback: &callbackRecord,
@@ -202,8 +283,52 @@ public final class H264Decoder: @unchecked Sendable {
             VTSessionSetProperty(newSession, key: kVTDecompressionPropertyKey_ThreadCount, value: threadCount)
         }
 
-        formatDescription = newFormatDescription
+        formatDescription = sessionFormatDescription
         decompressionSession = newSession
+    }
+
+    /// Returns a copy of `formatDescription` with the color attachments named by
+    /// `override` overwritten, preserving every other extension (notably the
+    /// `SampleDescriptionExtensionAtoms` that hold the avcC SPS/PPS). Returns
+    /// `formatDescription` unchanged when `override` is `nil`, and `nil` if the
+    /// corrected description could not be rebuilt.
+    ///
+    /// Pure and side-effect-free so it can be unit-tested without a live
+    /// VideoToolbox session.
+    static func applyingColorOverride(
+        _ override: H264ColorOverride?,
+        to formatDescription: CMVideoFormatDescription
+    ) -> CMVideoFormatDescription? {
+        guard let override else { return formatDescription }
+
+        let dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription)
+        let existing = (CMFormatDescriptionGetExtensions(formatDescription) as? [CFString: Any]) ?? [:]
+        var merged = existing
+
+        if let signaledFullRange = override.signaledFullRange {
+            merged[kCMFormatDescriptionExtension_FullRangeVideo] = signaledFullRange as CFBoolean
+        }
+        if let ycbcrMatrix = override.ycbcrMatrix {
+            merged[kCMFormatDescriptionExtension_YCbCrMatrix] = ycbcrMatrix
+        }
+        if let colorPrimaries = override.colorPrimaries {
+            merged[kCMFormatDescriptionExtension_ColorPrimaries] = colorPrimaries
+        }
+        if let transferFunction = override.transferFunction {
+            merged[kCMFormatDescriptionExtension_TransferFunction] = transferFunction
+        }
+
+        var corrected: CMVideoFormatDescription?
+        let status = CMVideoFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            codecType: kCMVideoCodecType_H264,
+            width: dimensions.width,
+            height: dimensions.height,
+            extensions: merged as CFDictionary,
+            formatDescriptionOut: &corrected
+        )
+        guard status == noErr else { return nil }
+        return corrected
     }
 
     private func makeSampleBuffer(from units: [H264NALUnit], timestampMicros: UInt64) throws -> CMSampleBuffer {
@@ -271,10 +396,16 @@ public final class H264Decoder: @unchecked Sendable {
     ) {
         guard status == noErr, let imageBuffer else { return }
 
+        // Expand studio-range YCbCr to full-range RGB on the GPU. This reads
+        // `imageBuffer` without mutating it — VideoToolbox reuses its output as a
+        // reference frame, so editing it in place corrupts later frames. Falls
+        // back to the original buffer if expansion is unavailable.
+        let displayBuffer = fullRangeExpander?.expand(imageBuffer) ?? imageBuffer
+
         var imageFormatDescription: CMVideoFormatDescription?
         let formatStatus = CMVideoFormatDescriptionCreateForImageBuffer(
             allocator: kCFAllocatorDefault,
-            imageBuffer: imageBuffer,
+            imageBuffer: displayBuffer,
             formatDescriptionOut: &imageFormatDescription
         )
         guard formatStatus == noErr, let imageFormatDescription else { return }
@@ -287,7 +418,7 @@ public final class H264Decoder: @unchecked Sendable {
         var decodedSampleBuffer: CMSampleBuffer?
         let sampleStatus = CMSampleBufferCreateReadyWithImageBuffer(
             allocator: kCFAllocatorDefault,
-            imageBuffer: imageBuffer,
+            imageBuffer: displayBuffer,
             formatDescription: imageFormatDescription,
             sampleTiming: &timing,
             sampleBufferOut: &decodedSampleBuffer

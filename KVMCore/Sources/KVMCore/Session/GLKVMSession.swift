@@ -57,7 +57,7 @@ public final class GLKVMSession: KVMSession {
         KVMLog.glkvm.info("Connecting GLKVM session to \(configuration.device.host, privacy: .public):\(configuration.device.port, privacy: .public)")
 
         let client = GLKVMClient(device: configuration.device)
-        let decoder = H264Decoder { [renderCoordinator] sampleBuffer in
+        let decoder = H264Decoder(colorOverride: .glkvm) { [renderCoordinator] sampleBuffer in
             renderCoordinator.enqueue(sampleBuffer)
             let videoSize = Self.videoSize(from: sampleBuffer)
             Task { @MainActor [weak self] in
