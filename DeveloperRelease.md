@@ -99,7 +99,7 @@ The iPad app is uploaded to TestFlight via App Store Connect using an **App Stor
 
 1. **Apple Developer portal → Identifiers**: ensure Bundle ID `io.lyx.KVMConsole` exists as an **iOS** App ID. No special capabilities are needed (local-network access is Info.plist-driven only).
 2. **App Store Connect → Apps → New App**: platform **iOS**, bundle ID `io.lyx.KVMConsole`, name **"KVM Console"** (must be globally unique on the App Store — pick an alternate display name if taken), primary language, and an SKU.
-3. **App Store Connect → Users and Access → Integrations → App Store Connect API**: create a key with role **App Manager** (needed for cloud signing + upload). Download the `.p8` (downloadable once only), and note the **Key ID** and the **Issuer ID**.
+3. **App Store Connect → Users and Access → Integrations → App Store Connect API**: create a key with role **Admin**. Admin is required — cloud-managed distribution signing (`-allowProvisioningUpdates`) needs access to cloud distribution certificates, which an App Manager key cannot create (it fails with "Cloud signing permission error"). Download the `.p8` (downloadable once only), and note the **Key ID** and the **Issuer ID**.
 4. **App Store Connect → Agreements**: accept the (free-app) Paid/Free Apps agreement, or uploads are blocked.
 5. Add the three `APP_STORE_CONNECT_API_*` GitHub secrets (see GitHub Secrets above).
 6. After the first successful upload + processing, in the app's **TestFlight** tab: confirm export compliance (auto-satisfied by `ITSAppUsesNonExemptEncryption=false` in the iPad Info.plist), fill in **Beta App Information**, and add **internal testers** (an external group additionally needs Beta App Review).
