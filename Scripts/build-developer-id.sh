@@ -20,6 +20,10 @@ EXPORT_PATH="${EXPORT_PATH:-$BUILD_ROOT/export}"
 NOTARY_ZIP_PATH="${NOTARY_ZIP_PATH:-$BUILD_ROOT/$APP_NAME-notarization.zip}"
 FINAL_ZIP_PATH="${FINAL_ZIP_PATH:-$BUILD_ROOT/$APP_NAME-DeveloperID.zip}"
 
+# Optional build number, shared with the iOS release so both platforms carry the
+# same CFBundleVersion. When unset (e.g. local builds), the project default wins.
+BUILD_NUMBER="${BUILD_NUMBER:-}"
+
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "error: missing required command: $1" >&2
@@ -83,15 +87,20 @@ cp "$EXPORT_OPTIONS" "$EFFECTIVE_EXPORT_OPTIONS"
 /usr/libexec/PlistBuddy -c "Set :teamID $APPLE_TEAM_ID" "$EFFECTIVE_EXPORT_OPTIONS"
 
 log "Archiving $APP_NAME"
-xcodebuild archive \
-  -project "$PROJECT_FILE" \
-  -scheme "$SCHEME" \
-  -configuration "$CONFIGURATION" \
-  -archivePath "$ARCHIVE_PATH" \
-  DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-  CODE_SIGN_STYLE=Manual \
-  CODE_SIGN_IDENTITY="Developer ID Application" \
+ARCHIVE_ARGS=(
+  -project "$PROJECT_FILE"
+  -scheme "$SCHEME"
+  -configuration "$CONFIGURATION"
+  -archivePath "$ARCHIVE_PATH"
+  DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
+  CODE_SIGN_STYLE=Manual
+  CODE_SIGN_IDENTITY="Developer ID Application"
   SKIP_INSTALL=NO
+)
+if [[ -n "$BUILD_NUMBER" ]]; then
+  ARCHIVE_ARGS+=(CURRENT_PROJECT_VERSION="$BUILD_NUMBER")
+fi
+xcodebuild archive "${ARCHIVE_ARGS[@]}"
 
 log "Exporting Developer ID app"
 xcodebuild -exportArchive \

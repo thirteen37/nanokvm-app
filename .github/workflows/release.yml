@@ -14,13 +14,15 @@ permissions:
   contents: write
 
 jobs:
-  notarize:
-    name: Notarize And Upload Release Asset
-    runs-on: macos-latest
-
+  version:
+    name: Resolve Tag And Build Number
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      build_number: ${{ steps.resolve.outputs.build_number }}
     steps:
-      - name: Resolve release tag
-        id: release
+      - name: Resolve release tag and shared build number
+        id: resolve
         env:
           RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
           DISPATCH_TAG: ${{ inputs.tag }}
@@ -31,12 +33,23 @@ jobs:
             echo "Release tag is required." >&2
             exit 1
           fi
+          # Dotted YYYYMMDD.HHMMSS: unique, monotonic, and each component stays
+          # under Apple's 2^32-1 per-component limit. Shared by both platforms.
+          BUILD_NUMBER="$(date -u +%Y%m%d.%H%M%S)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=$TAG build_number=$BUILD_NUMBER"
 
+  macos:
+    name: Notarize And Upload Release Asset
+    needs: version
+    runs-on: macos-latest
+
+    steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ steps.release.outputs.tag }}
+          ref: ${{ needs.version.outputs.tag }}
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -84,7 +97,8 @@ jobs:
       - name: Build, notarize, and staple
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          FINAL_ZIP_PATH: build/developer-id/KVMConsole-${{ steps.release.outputs.tag }}-DeveloperID-notarized.zip
+          BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
+          FINAL_ZIP_PATH: build/developer-id/KVMConsole-${{ needs.version.outputs.tag }}-DeveloperID-notarized.zip
           NOTARY_KEYCHAIN: ${{ steps.signing.outputs.keychain }}
           NOTARY_PROFILE: KVMConsole-DeveloperID
           NOTARIZE: "1"
@@ -93,15 +107,48 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: KVMConsole-${{ steps.release.outputs.tag }}-DeveloperID-notarized
-          path: build/developer-id/KVMConsole-${{ steps.release.outputs.tag }}-DeveloperID-notarized.zip
+          name: KVMConsole-${{ needs.version.outputs.tag }}-DeveloperID-notarized
+          path: build/developer-id/KVMConsole-${{ needs.version.outputs.tag }}-DeveloperID-notarized.zip
           if-no-files-found: error
 
       - name: Upload asset to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
         run: |
           gh release upload "$RELEASE_TAG" \
             build/developer-id/KVMConsole-"$RELEASE_TAG"-DeveloperID-notarized.zip \
             --clobber
+
+  ios:
+    name: Upload iOS Build To TestFlight
+    needs: version
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Decode App Store Connect API key
+        id: asc
+        env:
+          ASC_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          echo "$ASC_KEY_BASE64" | base64 --decode > "$KEY_PATH"
+          echo "key_path=$KEY_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Build and upload to TestFlight
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ steps.asc.outputs.key_path }}
+          BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
+        run: Scripts/build-testflight.sh
