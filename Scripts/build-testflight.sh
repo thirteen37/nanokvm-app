@@ -83,8 +83,7 @@ xcodebuild archive \
   -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
   DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
   CODE_SIGN_STYLE=Automatic \
-  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-  SKIP_INSTALL=NO
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 
 log "Exporting and uploading to App Store Connect (TestFlight)"
 xcodebuild -exportArchive \
