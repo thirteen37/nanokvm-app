@@ -13,6 +13,12 @@ public struct KVMSessionConfiguration: Equatable, Sendable {
     }
 }
 
+/// Errors raised when a connection attempt is cancelled (e.g. `disconnect()` or a superseding
+/// `connect()`) should not be surfaced as `.error` or retried. Shared by the session retry loops.
+nonisolated func isCancellationError(_ error: Error) -> Bool {
+    error is CancellationError || (error as? URLError)?.code == .cancelled
+}
+
 public enum KVMSessionState: Equatable {
     case disconnected
     case connecting

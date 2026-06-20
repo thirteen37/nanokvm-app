@@ -7,6 +7,8 @@ public enum GLKVMH264MediaError: Error, LocalizedError, Equatable {
     case h264Unavailable
     case frameTooShort
     case emptyPayload
+    case streamEndedBeforeFirstFrame
+    case firstFrameTimedOut
 
     public var errorDescription: String? {
         switch self {
@@ -20,6 +22,10 @@ public enum GLKVMH264MediaError: Error, LocalizedError, Equatable {
             return "GLKVM direct H.264 frame is shorter than the 2-byte header."
         case .emptyPayload:
             return "GLKVM direct H.264 frame has no video payload."
+        case .streamEndedBeforeFirstFrame:
+            return "GLKVM media stream closed before delivering a frame."
+        case .firstFrameTimedOut:
+            return "GLKVM media stream did not deliver a frame in time."
         }
     }
 }
@@ -71,7 +77,11 @@ public final class GLKVMH264MediaSocket: @unchecked Sendable {
         }
     }
 
-    public func frames() throws -> AsyncThrowingStream<H264StreamFrame, Error> {
+    /// - Parameter firstFrameTimeout: when non-nil, the stream fails with `.firstFrameTimedOut`
+    ///   if no decodable frame arrives within this interval. The socket's own 1s heartbeats keep a
+    ///   frameless connection open, so without this a stalled streamer (e.g. mid-restart) would
+    ///   never surface an error.
+    public func frames(firstFrameTimeout: Duration? = nil) throws -> AsyncThrowingStream<H264StreamFrame, Error> {
         guard let url = mediaURL else { throw GLKVMH264MediaError.invalidURL }
 
         var request = URLRequest(url: url)
@@ -86,8 +96,18 @@ public final class GLKVMH264MediaSocket: @unchecked Sendable {
             webSocketTask.resume()
             startHeartbeat(task: webSocketTask)
 
+            let timeoutTask: Task<Void, Never>? = firstFrameTimeout.map { timeout in
+                Task { [weak self] in
+                    try? await Task.sleep(for: timeout)
+                    guard !Task.isCancelled else { return }
+                    continuation.finish(throwing: GLKVMH264MediaError.firstFrameTimedOut)
+                    self?.cancel()
+                }
+            }
+
             let receiveTask = Task { [weak self] in
                 var frameSequencer = H264StreamFrameSequencer(source: "GLKVM direct H.264")
+                var firstFrameYielded = false
                 do {
                     while !Task.isCancelled {
                         let message = try await webSocketTask.receive()
@@ -107,6 +127,10 @@ public final class GLKVMH264MediaSocket: @unchecked Sendable {
                                     sequenceNumber: frame.sequenceNumber,
                                     wireArrivalHostTime: wireArrival
                                 )
+                                if !firstFrameYielded {
+                                    firstFrameYielded = true
+                                    timeoutTask?.cancel()
+                                }
                                 frameSequencer.recordYield(continuation.yield(frameSequencer.nextFrame(from: stamped)))
                             }
                         @unknown default:
@@ -124,6 +148,7 @@ public final class GLKVMH264MediaSocket: @unchecked Sendable {
             }
 
             continuation.onTermination = { @Sendable [weak self] _ in
+                timeoutTask?.cancel()
                 receiveTask.cancel()
                 self?.cancel()
             }

@@ -6,6 +6,8 @@ public enum H264StreamError: Error, LocalizedError, Equatable {
     case frameTooShort
     case emptyPayload
     case unsupportedMessage
+    case streamEndedBeforeFirstFrame
+    case firstFrameTimedOut
 
     public var errorDescription: String? {
         switch self {
@@ -13,6 +15,8 @@ public enum H264StreamError: Error, LocalizedError, Equatable {
         case .frameTooShort: return "H.264 stream frame is shorter than the 9-byte header."
         case .emptyPayload: return "H.264 stream frame has no video payload."
         case .unsupportedMessage: return "H.264 stream returned a non-binary message."
+        case .streamEndedBeforeFirstFrame: return "H.264 stream closed before delivering a frame."
+        case .firstFrameTimedOut: return "H.264 stream did not deliver a frame in time."
         }
     }
 }
@@ -111,7 +115,11 @@ public final class H264StreamSocket: @unchecked Sendable {
         self.session = session
     }
 
-    public func frames() throws -> AsyncThrowingStream<H264StreamFrame, Error> {
+    /// - Parameter firstFrameTimeout: when non-nil, the stream fails with `.firstFrameTimedOut`
+    ///   if no decodable frame arrives within this interval of `resume()`. Guards against a device
+    ///   that accepts the WebSocket but then stalls (e.g. while its streamer restarts) without ever
+    ///   sending a frame or closing the connection.
+    public func frames(firstFrameTimeout: Duration? = nil) throws -> AsyncThrowingStream<H264StreamFrame, Error> {
         guard let url = streamURL else { throw H264StreamError.invalidURL }
 
         var request = URLRequest(url: url)
@@ -123,8 +131,19 @@ public final class H264StreamSocket: @unchecked Sendable {
 
         return AsyncThrowingStream(bufferingPolicy: .bufferingNewest(H264StreamBuffering.frameLimit)) { continuation in
             webSocketTask.resume()
+
+            let timeoutTask: Task<Void, Never>? = firstFrameTimeout.map { timeout in
+                Task {
+                    try? await Task.sleep(for: timeout)
+                    guard !Task.isCancelled else { return }
+                    continuation.finish(throwing: H264StreamError.firstFrameTimedOut)
+                    webSocketTask.cancel(with: .goingAway, reason: nil)
+                }
+            }
+
             let receiveTask = Task {
                 var frameSequencer = H264StreamFrameSequencer(source: "NanoKVM H.264")
+                var firstFrameYielded = false
                 do {
                     while !Task.isCancelled {
                         let message = try await webSocketTask.receive()
@@ -140,6 +159,10 @@ public final class H264StreamSocket: @unchecked Sendable {
                                     sequenceNumber: parsed.sequenceNumber,
                                     wireArrivalHostTime: wireArrival
                                 )
+                                if !firstFrameYielded {
+                                    firstFrameYielded = true
+                                    timeoutTask?.cancel()
+                                }
                                 frameSequencer.recordYield(continuation.yield(frameSequencer.nextFrame(from: stamped)))
                             } catch H264StreamError.frameTooShort, H264StreamError.emptyPayload {
                                 continue
@@ -161,6 +184,7 @@ public final class H264StreamSocket: @unchecked Sendable {
             }
 
             continuation.onTermination = { @Sendable _ in
+                timeoutTask?.cancel()
                 receiveTask.cancel()
                 webSocketTask.cancel(with: .goingAway, reason: nil)
             }

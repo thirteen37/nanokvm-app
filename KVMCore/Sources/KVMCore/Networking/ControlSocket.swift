@@ -2,10 +2,12 @@ import Foundation
 
 public enum ControlSocketError: Error, LocalizedError, Equatable {
     case invalidURL
+    case disconnectedBeforeStreaming
 
     public var errorDescription: String? {
         switch self {
         case .invalidURL: return "Invalid control socket URL."
+        case .disconnectedBeforeStreaming: return "Control socket disconnected before streaming began."
         }
     }
 }
@@ -24,6 +26,10 @@ public actor ControlSocket {
         self.token = token
         self.session = session
     }
+
+    /// `false` once the socket has dropped (its receive loop nils `task` via `close()`), letting the
+    /// session detect a control-socket drop during the connecting window before handing off.
+    public var isOpen: Bool { task != nil }
 
     public func setOnDisconnect(_ callback: @escaping @Sendable (Error) -> Void) {
         onDisconnect = callback

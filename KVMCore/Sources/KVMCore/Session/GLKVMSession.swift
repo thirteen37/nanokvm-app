@@ -33,6 +33,16 @@ public final class GLKVMSession: KVMSession {
     private let passwordStore: PasswordStore
     private let renderCoordinator: SampleBufferRenderCoordinator
 
+    /// `setStreamerVideoFormatH264()` restarts the device's streamer when it switches format; the
+    /// media stream we open immediately after can catch that restart and throw. Retry the post-login
+    /// setup a bounded number of times before surfacing an error.
+    private static let maxConnectAttempts = 3
+    private static let connectRetryBackoff: Duration = .milliseconds(750)
+    /// Bounds each attempt's `.connecting` state: if the media stream accepts the socket but never
+    /// delivers a frame (a stalled streamer, kept alive by the socket's 1s heartbeats), the attempt
+    /// fails and retries rather than hanging.
+    private static let connectFirstFrameTimeout: Duration = .seconds(5)
+
     public init(
         passwordStore: PasswordStore = KeychainPasswordStore(),
         renderCoordinator: SampleBufferRenderCoordinator = SampleBufferRenderCoordinator()
@@ -69,11 +79,9 @@ public final class GLKVMSession: KVMSession {
         self.decoder = decoder
 
         streamTask = Task { [weak self] in
-            var localControlSocket: GLKVMControlSocket?
-            var localMouseMoveCoalescer: MouseMoveCoalescer?
-            var localMediaSocket: GLKVMH264MediaSocket?
-            var handedOff = false
             do {
+                // Login + password save stay outside the retry scope so an auth failure surfaces
+                // immediately (keeping the password-prompt path unchanged).
                 try await client.login(password: configuration.password)
                 KVMLog.glkvm.info("GLKVM login succeeded")
                 try Task.checkCancellation()
@@ -83,77 +91,146 @@ public final class GLKVMSession: KVMSession {
                     throw GLKVMError.missingAuthToken
                 }
 
-                try await client.setStreamerVideoFormatH264()
-                KVMLog.glkvm.info("GLKVM streamer video format set to H.264")
-
-                let controlSocket = GLKVMControlSocket(device: configuration.device, authToken: authToken)
-                await controlSocket.setOnDisconnect { [weak self] error in
-                    Task { @MainActor in
-                        guard let self, self.generation == myGeneration else { return }
-                        guard self.state == .connecting || self.state == .streaming else { return }
-                        self.finishWithError(error)
+                var attempt = 0
+                while true {
+                    if attempt > 0 {
+                        // Task.sleep throws on cancel, routing to the outer catch's cancellation path.
+                        try await Task.sleep(for: Self.connectRetryBackoff)
                     }
-                }
-                await controlSocket.setOnHostStatusUpdate { [weak self] status in
-                    Task { @MainActor in
-                        guard let self, self.generation == myGeneration else { return }
-                        self.hostStatus = status
-                    }
-                }
-                try await controlSocket.connect()
-                localControlSocket = controlSocket
-                let mouseMoveCoalescer = MouseMoveCoalescer { report in
-                    await controlSocket.sendMouseAbsoluteReport(report)
-                }
-                localMouseMoveCoalescer = mouseMoveCoalescer
-
-                await MainActor.run {
-                    guard let self, self.generation == myGeneration, self.state == .connecting else { return }
-                    self.controlSocket = controlSocket
-                    self.mouseMoveCoalescer = mouseMoveCoalescer
-                }
-                KVMLog.glkvm.info("GLKVM control socket is ready")
-
-                let mediaSocket = GLKVMH264MediaSocket(device: configuration.device, authToken: authToken)
-                let frames = try mediaSocket.frames()
-                localMediaSocket = mediaSocket
-
-                handedOff = await MainActor.run { () -> Bool in
-                    guard let self, self.generation == myGeneration, self.state == .connecting else { return false }
-                    self.mediaSocket = mediaSocket
-                    self.state = .streaming
-                    return true
-                }
-                KVMLog.glkvm.info("GLKVM direct H.264 pipeline started")
-
-                guard handedOff else {
-                    mediaSocket.cancel()
-                    await mouseMoveCoalescer.cancel()
-                    await controlSocket.close()
-                    return
-                }
-
-                for try await frame in frames {
                     try Task.checkCancellation()
-                    try decoder.decode(frame)
-                }
+                    attempt += 1
 
-                await MainActor.run {
-                    guard let self, self.generation == myGeneration else { return }
-                    self.finishDisconnected()
+                    var localControlSocket: GLKVMControlSocket?
+                    var localMouseMoveCoalescer: MouseMoveCoalescer?
+                    var localMediaSocket: GLKVMH264MediaSocket?
+                    var handedOff = false
+                    do {
+                        try await client.setStreamerVideoFormatH264()
+                        KVMLog.glkvm.info("GLKVM streamer video format set to H.264 (attempt \(attempt, privacy: .public))")
+
+                        let controlSocket = GLKVMControlSocket(device: configuration.device, authToken: authToken)
+                        // Host-status updates are harmless while connecting, so arm them before connect().
+                        await controlSocket.setOnHostStatusUpdate { [weak self] status in
+                            Task { @MainActor in
+                                guard let self, self.generation == myGeneration else { return }
+                                self.hostStatus = status
+                            }
+                        }
+                        try await controlSocket.connect()
+                        localControlSocket = controlSocket
+                        // Arm onDisconnect right after connect() so a post-connect drop is never
+                        // missed, but only act once streaming: while connecting (including retries)
+                        // the retry loop is the sole failure handler, so the callback no-ops and
+                        // can't race us to .error.
+                        await controlSocket.setOnDisconnect { [weak self] error in
+                            Task { @MainActor in
+                                guard let self, self.generation == myGeneration else { return }
+                                guard self.state == .streaming else { return }
+                                self.finishWithError(error)
+                            }
+                        }
+                        let mouseMoveCoalescer = MouseMoveCoalescer { report in
+                            await controlSocket.sendMouseAbsoluteReport(report)
+                        }
+                        localMouseMoveCoalescer = mouseMoveCoalescer
+
+                        let mediaSocket = GLKVMH264MediaSocket(device: configuration.device, authToken: authToken)
+                        var frameIterator = try mediaSocket
+                            .frames(firstFrameTimeout: Self.connectFirstFrameTimeout)
+                            .makeAsyncIterator()
+                        localMediaSocket = mediaSocket
+
+                        // Await the first frame *before* handoff — see NanoKVMSession for the full
+                        // rationale. setStreamerVideoFormatH264() restarts the streamer, so the media
+                        // stream fails on its first receive(), which surfaces only here; awaiting it
+                        // inside the attempt is what lets the bounded retry absorb the restart race.
+                        // A stalled streamer trips the socket's first-frame timeout, which routes here.
+                        guard let firstFrame = try await frameIterator.next() else {
+                            try Task.checkCancellation()
+                            throw GLKVMH264MediaError.streamEndedBeforeFirstFrame
+                        }
+                        try Task.checkCancellation()
+
+                        // The retry loop doesn't otherwise observe control-socket failures, so catch a
+                        // drop during this connecting window here (onDisconnect only acts once
+                        // streaming) — otherwise we'd hand off to live video with dead keyboard/mouse.
+                        guard await controlSocket.isOpen else {
+                            throw GLKVMControlSocketError.disconnectedBeforeStreaming
+                        }
+
+                        // Single-phase handoff: assign control socket, coalescer, and media socket
+                        // together so each attempt is atomic and never leaks a socket into self.
+                        handedOff = await MainActor.run { () -> Bool in
+                            guard let self, self.generation == myGeneration, self.state == .connecting else { return false }
+                            self.controlSocket = controlSocket
+                            self.mouseMoveCoalescer = mouseMoveCoalescer
+                            self.mediaSocket = mediaSocket
+                            self.state = .streaming
+                            return true
+                        }
+
+                        guard handedOff else {
+                            // Superseded by a newer connect/disconnect — orderly teardown, no retry.
+                            mediaSocket.cancel()
+                            await mouseMoveCoalescer.cancel()
+                            await controlSocket.close()
+                            return
+                        }
+
+                        KVMLog.glkvm.info("GLKVM direct H.264 pipeline started")
+
+                        // Streaming is live — the frame loop is now terminal (no retry mid-stream).
+                        do {
+                            try decoder.decode(firstFrame)
+                            while let frame = try await frameIterator.next() {
+                                try Task.checkCancellation()
+                                try decoder.decode(frame)
+                            }
+                            await MainActor.run {
+                                guard let self, self.generation == myGeneration else { return }
+                                self.finishDisconnected()
+                            }
+                        } catch {
+                            let isCancellation = isCancellationError(error)
+                            await MainActor.run {
+                                guard let self, self.generation == myGeneration else { return }
+                                if isCancellation {
+                                    self.clearResources(cancelTask: false)
+                                } else {
+                                    self.finishWithError(error)
+                                }
+                            }
+                        }
+                        return
+                    } catch {
+                        // Pre-handoff failure: tear down this attempt's sockets. The client holds the
+                        // auth token and is reused across attempts, so it is deliberately left open.
+                        localMediaSocket?.cancel()
+                        if let coalescer = localMouseMoveCoalescer {
+                            await coalescer.cancel()
+                        }
+                        if let socket = localControlSocket {
+                            await socket.close()
+                        }
+                        if isCancellationError(error) {
+                            await MainActor.run {
+                                guard let self, self.generation == myGeneration else { return }
+                                self.clearResources(cancelTask: false)
+                            }
+                            return
+                        }
+                        if attempt >= Self.maxConnectAttempts {
+                            await MainActor.run {
+                                guard let self, self.generation == myGeneration else { return }
+                                self.finishWithError(error)
+                            }
+                            return
+                        }
+                        KVMLog.glkvm.info("GLKVM connect attempt \(attempt, privacy: .public) failed: \(error.localizedDescription, privacy: .public) — retrying")
+                    }
                 }
             } catch {
-                if !handedOff {
-                    localMediaSocket?.cancel()
-                }
-                if let socket = localControlSocket, !handedOff {
-                    await socket.close()
-                }
-                if let coalescer = localMouseMoveCoalescer, !handedOff {
-                    await coalescer.cancel()
-                }
-                let isCancellation = (error is CancellationError)
-                    || (error as? URLError)?.code == .cancelled
+                let isCancellation = isCancellationError(error)
                 await MainActor.run {
                     guard let self, self.generation == myGeneration else { return }
                     if isCancellation {
