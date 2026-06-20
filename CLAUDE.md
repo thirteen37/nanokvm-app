@@ -33,7 +33,7 @@ swift test --package-path KVMCore
 NOTARIZE=0 Scripts/build-developer-id.sh
 ```
 
-Release pipeline (Developer ID signing + notarization, macOS only) is documented in `DeveloperRelease.md`. CI workflows live in `.github/workflows/` — `test.yml` (macOS + iPadOS), `build-developer-id.yml`, `release.yml`. iPad TestFlight/App Store distribution is not yet wired up.
+Release pipeline is documented in `DeveloperRelease.md`. One published GitHub Release triggers `release.yml`, which builds both platforms off the same tag and a shared timestamp build number: the macOS app via Developer ID signing + notarization, and the iPadOS app via App Store Connect upload to TestFlight (cloud-signed with an App Store Connect API key). Marketing version and build number have a single source of truth in `project.yml` (`settings.base` → `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`), referenced by both targets' Info.plist. CI workflows live in `.github/workflows/` — `test.yml` (macOS + iPadOS), `build-developer-id.yml`, `release.yml`.
 
 ## Toolchain
 
