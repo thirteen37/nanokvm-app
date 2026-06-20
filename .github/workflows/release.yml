@@ -123,13 +123,27 @@ jobs:
   ios:
     name: Upload iOS Build To TestFlight
     needs: version
-    runs-on: macos-latest
+    runs-on: macos-15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.version.outputs.tag }}
+
+      - name: Select Xcode 26
+        # App Store Connect requires builds made with the iOS 26 SDK (Xcode 26+).
+        # The runner's default Xcode is older, so pick the newest installed 26.x.
+        run: |
+          set -euo pipefail
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [[ -z "$XCODE" ]]; then
+            echo "error: no Xcode 26 found on runner. Available Xcodes:" >&2
+            ls -d /Applications/Xcode_*.app >&2 || true
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
 
       - name: Install XcodeGen
         run: brew install xcodegen
