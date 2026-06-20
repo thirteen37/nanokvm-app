@@ -68,6 +68,10 @@ struct ViewerView: View {
             if model.passwordPrompt != nil {
                 passwordPromptOverlay
             }
+
+            if showsErrorOverlay {
+                errorOverlay
+            }
         }
         .background(WindowAccessor { newWindow in
             attachWindow(newWindow)
@@ -342,6 +346,37 @@ struct ViewerView: View {
         .padding(20)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .frame(maxWidth: 360)
+    }
+
+    private var showsErrorOverlay: Bool {
+        model.state.errorMessage != nil && model.passwordPrompt == nil
+    }
+
+    private var errorOverlay: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.largeTitle)
+                .foregroundStyle(.red)
+            Text("Connection failed")
+                .font(.headline)
+            if let errorMessage = model.errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+            }
+            Button {
+                model.reconnect()
+            } label: {
+                Label("Reconnect", systemImage: "arrow.clockwise")
+            }
+            .keyboardShortcut(.defaultAction)
+        }
+        .padding(24)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: 360)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var statusColor: Color {

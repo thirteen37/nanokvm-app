@@ -50,7 +50,11 @@ struct ViewerView: View {
                 passwordPromptOverlay
             }
 
-            if showModifierBar, model.passwordPrompt == nil {
+            if showsErrorOverlay {
+                errorOverlay
+            }
+
+            if showModifierBar, model.passwordPrompt == nil, !showsErrorOverlay {
                 ModifierKeyBar(state: $modifierState) { usage, modifier in
                     sendVirtualKey(usage: usage, modifier: modifier)
                 }
@@ -263,6 +267,37 @@ struct ViewerView: View {
         .padding(20)
         .frame(maxWidth: 420)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var showsErrorOverlay: Bool {
+        model.state.errorMessage != nil && model.passwordPrompt == nil
+    }
+
+    private var errorOverlay: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.largeTitle)
+                .foregroundStyle(.red)
+            Text("Connection failed")
+                .font(.headline)
+            if let errorMessage = model.errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+            }
+            Button {
+                model.reconnect()
+            } label: {
+                Label("Reconnect", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(24)
+        .frame(maxWidth: 420)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var statusColor: Color {
