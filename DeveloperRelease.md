@@ -5,8 +5,8 @@ This repo ships two apps from one xcodegen project: the **macOS** app (Developer
 GitHub Actions workflows:
 
 - `Test`: runs unit tests on pull requests, pushes to `main`, and manual dispatch. It does not require signing secrets.
-- `Build Developer ID App`: manually creates a Developer ID signed zip without notarization. Use this for release candidate validation.
-- `Release Notarized App` (`release.yml`): runs when a GitHub Release is published, or when manually dispatched for an existing release tag. It has three jobs: `version` resolves the tag and computes one shared build number; `macos` builds, notarizes, staples, and uploads the zip to the GitHub Release page; `ios` builds and uploads the iPad app to TestFlight. Both platform jobs build the same tag with the same build number, so a single release publishes both.
+- `Build Developer ID App`: manually creates a Developer ID signed `.dmg` without notarization. Use this for release candidate validation.
+- `Release Notarized App` (`release.yml`): runs when a GitHub Release is published, or when manually dispatched for an existing release tag. It has three jobs: `version` resolves the tag and computes one shared build number; `macos` builds, notarizes, and staples a `.dmg` (drag-to-Applications disk image — both the app *and* the disk image are stapled) and uploads it to the GitHub Release page; `ios` builds and uploads the iPad app to TestFlight. Both platform jobs build the same tag with the same build number, so a single release publishes both.
 
 ## Versioning
 
@@ -74,10 +74,10 @@ xcodebuild test \
   DEVELOPMENT_TEAM=
 ```
 
-Build a signed but not notarized app:
+Build a signed but not notarized `.dmg`:
 
 ```sh
-NOTARIZE=0 FINAL_ZIP_PATH=build/developer-id/KVMConsole-DeveloperID-signed.zip Scripts/build-developer-id.sh
+NOTARIZE=0 FINAL_DMG_PATH=build/developer-id/KVMConsole-signed.dmg Scripts/build-developer-id.sh
 ```
 
 Build, notarize, staple, and package locally:
@@ -122,10 +122,10 @@ Scripts/build-testflight.sh
 1. Merge the release commit to `main`.
 2. Create and publish a GitHub Release for the desired tag.
 3. The `version` job resolves the tag and computes one shared build number (`YYYYMMDD.HHMMSS`).
-4. The `macos` job checks out the tag, imports the Developer ID certificate from GitHub Secrets, stores notarization credentials, runs `Scripts/build-developer-id.sh` (notarization enabled, carrying the shared build number), and uploads `KVMConsole-<tag>-DeveloperID-notarized.zip` to the release page.
+4. The `macos` job checks out the tag, imports the Developer ID certificate from GitHub Secrets, stores notarization credentials, runs `Scripts/build-developer-id.sh` (notarization enabled, carrying the shared build number), and uploads `KVMConsole-<tag>.dmg` to the release page.
 5. The `ios` job checks out the same tag, decodes the App Store Connect API key, and runs `Scripts/build-testflight.sh` to upload the iPad build to TestFlight with the same build number.
 
-The release page asset is the final user-downloadable macOS app zip; the iPad build lands in TestFlight.
+The release page asset is the final user-downloadable macOS `.dmg`; the iPad build lands in TestFlight.
 
 Note: the marketing version (`MARKETING_VERSION` in `project.yml`) should match the git tag you release. A `1.0.0` tag already exists at an older commit — when releasing, either move it to the commit that includes these pipeline/version changes (`git tag -f 1.0.0 && git push -f origin 1.0.0`) or cut a newer tag and set `MARKETING_VERSION` to match.
 
