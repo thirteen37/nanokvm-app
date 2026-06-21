@@ -46,7 +46,7 @@ jobs:
       - name: Build signed app
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          FINAL_ZIP_PATH: build/developer-id/KVMConsole-DeveloperID-signed.zip
+          FINAL_DMG_PATH: build/developer-id/KVMConsole-DeveloperID-signed.dmg
           NOTARIZE: "0"
         run: Scripts/build-developer-id.sh
 
@@ -54,5 +54,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: KVMConsole-DeveloperID-signed
-          path: build/developer-id/KVMConsole-DeveloperID-signed.zip
+          path: build/developer-id/KVMConsole-DeveloperID-signed.dmg
           if-no-files-found: error

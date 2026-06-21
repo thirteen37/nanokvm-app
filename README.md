@@ -38,7 +38,7 @@ I started this after using NanoKVM to drive my spare Mac in the closet for AI-ag
 
 ## Install
 
-For macOS, download the notarized `KVMConsole-<tag>-DeveloperID-notarized.zip` from the latest [GitHub Release](../../releases), unzip, and drag `KVM Console.app` into `/Applications`.
+For macOS, download `KVMConsole-<tag>.dmg` from the latest [GitHub Release](../../releases), open it, and drag `KVM Console` into the `Applications` folder.
 
 ## Build from source
 

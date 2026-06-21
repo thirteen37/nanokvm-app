@@ -17,8 +17,12 @@ EXPORT_OPTIONS="${EXPORT_OPTIONS:-ExportOptions-DeveloperID.plist}"
 BUILD_ROOT="${BUILD_ROOT:-build/developer-id}"
 ARCHIVE_PATH="${ARCHIVE_PATH:-$BUILD_ROOT/$APP_NAME.xcarchive}"
 EXPORT_PATH="${EXPORT_PATH:-$BUILD_ROOT/export}"
+# Transient zip used only to submit the .app for notarization (the app is
+# stapled in place; this zip is not the distributable).
 NOTARY_ZIP_PATH="${NOTARY_ZIP_PATH:-$BUILD_ROOT/$APP_NAME-notarization.zip}"
-FINAL_ZIP_PATH="${FINAL_ZIP_PATH:-$BUILD_ROOT/$APP_NAME-DeveloperID.zip}"
+# The distributable artifact: a notarized, stapled disk image.
+FINAL_DMG_PATH="${FINAL_DMG_PATH:-$BUILD_ROOT/$APP_NAME.dmg}"
+DMG_VOLNAME="${DMG_VOLNAME:-KVM Console}"
 
 # Optional build number, shared with the iOS release so both platforms carry the
 # same CFBundleVersion. When unset (e.g. local builds), the project default wins.
@@ -42,6 +46,16 @@ log() {
   printf '\n==> %s\n' "$1"
 }
 
+# Submit one artifact (app zip or dmg) to notarytool and wait for the result.
+submit_notarization() {
+  local artifact="$1"
+  local args=(--keychain-profile "$NOTARY_PROFILE" --team-id "$APPLE_TEAM_ID")
+  if [[ -n "$NOTARY_KEYCHAIN" ]]; then
+    args+=(--keychain "$NOTARY_KEYCHAIN")
+  fi
+  xcrun notarytool submit "$artifact" "${args[@]}" --wait
+}
+
 case "$NOTARIZE" in
   1|true|TRUE|yes|YES)
     NOTARIZE=1
@@ -59,6 +73,7 @@ require_command xcodegen
 require_command xcodebuild
 require_command codesign
 require_command security
+require_command hdiutil
 if [[ "$NOTARIZE" == "1" ]]; then
   require_command spctl
   require_xcrun_tool notarytool
@@ -117,35 +132,47 @@ log "Verifying signature"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 if [[ "$NOTARIZE" == "1" ]]; then
-  log "Creating notarization zip"
+  log "Notarizing app"
   ditto -c -k --keepParent "$APP_PATH" "$NOTARY_ZIP_PATH"
+  submit_notarization "$NOTARY_ZIP_PATH"
 
-  log "Submitting for notarization"
-  NOTARYTOOL_ARGS=(
-    --keychain-profile "$NOTARY_PROFILE"
-    --team-id "$APPLE_TEAM_ID"
-  )
-  if [[ -n "$NOTARY_KEYCHAIN" ]]; then
-    NOTARYTOOL_ARGS+=(--keychain "$NOTARY_KEYCHAIN")
-  fi
-  xcrun notarytool submit "$NOTARY_ZIP_PATH" \
-    "${NOTARYTOOL_ARGS[@]}" \
-    --wait
-
-  log "Stapling ticket"
+  log "Stapling app"
   xcrun stapler staple "$APP_PATH"
   xcrun stapler validate "$APP_PATH"
   spctl -a -vvv -t exec "$APP_PATH"
 else
-  log "Skipping notarization"
+  log "Skipping app notarization"
 fi
 
-log "Creating final distributable"
-rm -f "$FINAL_ZIP_PATH"
-ditto -c -k --keepParent "$APP_PATH" "$FINAL_ZIP_PATH"
+log "Building DMG"
+DMG_STAGE="$BUILD_ROOT/dmg-stage"
+rm -rf "$DMG_STAGE"
+mkdir -p "$DMG_STAGE"
+cp -R "$APP_PATH" "$DMG_STAGE/"
+ln -s /Applications "$DMG_STAGE/Applications"
+rm -f "$FINAL_DMG_PATH"
+hdiutil create \
+  -volname "$DMG_VOLNAME" \
+  -fs HFS+ \
+  -format UDZO \
+  -srcfolder "$DMG_STAGE" \
+  -ov \
+  "$FINAL_DMG_PATH"
+rm -rf "$DMG_STAGE"
+
+log "Signing DMG"
+codesign --force --sign "Developer ID Application" --timestamp "$FINAL_DMG_PATH"
 
 if [[ "$NOTARIZE" == "1" ]]; then
-  printf '\nDeveloper ID notarized build complete:\n  %s\n' "$FINAL_ZIP_PATH"
+  log "Notarizing DMG"
+  submit_notarization "$FINAL_DMG_PATH"
+
+  log "Stapling DMG"
+  xcrun stapler staple "$FINAL_DMG_PATH"
+  xcrun stapler validate "$FINAL_DMG_PATH"
+  spctl -a -vvv -t open --context context:primary-signature "$FINAL_DMG_PATH"
+
+  printf '\nDeveloper ID notarized DMG complete:\n  %s\n' "$FINAL_DMG_PATH"
 else
-  printf '\nDeveloper ID signed build complete, not notarized:\n  %s\n' "$FINAL_ZIP_PATH"
+  printf '\nDeveloper ID signed DMG complete, not notarized:\n  %s\n' "$FINAL_DMG_PATH"
 fi
