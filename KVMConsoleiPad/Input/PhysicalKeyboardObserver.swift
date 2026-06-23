@@ -1,6 +1,5 @@
 import Combine
 import GameController
-import SwiftUI
 
 /// Tracks whether a hardware keyboard is currently attached to the device.
 ///
