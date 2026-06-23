@@ -58,4 +58,22 @@ final class KVMConsoleiPadTests: XCTestCase {
         XCTAssertFalse(PointerScrollResolver.shouldEmitWheel(touchCount: 1))
         XCTAssertTrue(PointerScrollResolver.shouldEmitWheel(touchCount: 2))
     }
+
+    func test_modifierBarHiddenWhenPhysicalKeyboardConnected() {
+        XCTAssertFalse(
+            ModifierBarVisibility.shouldShow(userEnabled: true, physicalKeyboardConnected: true)
+        )
+    }
+
+    func test_modifierBarVisibleWhenEnabledAndNoPhysicalKeyboard() {
+        XCTAssertTrue(
+            ModifierBarVisibility.shouldShow(userEnabled: true, physicalKeyboardConnected: false)
+        )
+    }
+
+    func test_modifierBarHiddenWhenUserDisablesIt() {
+        XCTAssertFalse(
+            ModifierBarVisibility.shouldShow(userEnabled: false, physicalKeyboardConnected: false)
+        )
+    }
 }

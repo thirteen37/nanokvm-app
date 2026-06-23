@@ -33,6 +33,7 @@ struct ViewerHostView: View {
 
 struct ViewerView: View {
     @StateObject private var model: ViewerViewModel
+    @StateObject private var keyboardObserver = PhysicalKeyboardObserver()
     @State private var modifierState = ModifierKeyState()
     @State private var showModifierBar = true
     @State private var keyboardFocusToken = 0
@@ -54,7 +55,7 @@ struct ViewerView: View {
                 errorOverlay
             }
 
-            if showModifierBar, model.passwordPrompt == nil, !showsErrorOverlay {
+            if modifierBarVisible, model.passwordPrompt == nil, !showsErrorOverlay {
                 ModifierKeyBar(state: $modifierState) { usage, modifier in
                     sendVirtualKey(usage: usage, modifier: modifier)
                 }
@@ -120,6 +121,13 @@ struct ViewerView: View {
         }
     }
 
+    private var modifierBarVisible: Bool {
+        ModifierBarVisibility.shouldShow(
+            userEnabled: showModifierBar,
+            physicalKeyboardConnected: keyboardObserver.isConnected
+        )
+    }
+
     private var showsLocalCursor: Bool {
         model.isStreaming
             && model.isMouseCaptureEnabled
@@ -171,7 +179,10 @@ struct ViewerView: View {
             }
             .toggleStyle(.button)
             .labelStyle(.iconOnly)
-            .help(showModifierBar ? "Hide modifier-key bar" : "Show modifier-key bar")
+            .disabled(keyboardObserver.isConnected)
+            .help(keyboardObserver.isConnected
+                  ? "Hardware keyboard connected — modifier-key bar hidden"
+                  : (showModifierBar ? "Hide modifier-key bar" : "Show modifier-key bar"))
 
             Button {
                 keyboardFocusToken += 1
