@@ -11,8 +11,27 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Unit Tests
+  package:
+    name: Package Tests (KVMCore)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: KVMCore/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('KVMCore/Package.swift', 'KVMCore/Sources/**', 'KVMCore/Tests/**') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Run package tests
+        run: swift test --package-path KVMCore
+
+  macos:
+    name: macOS Tests (KVMConsole)
     runs-on: macos-latest
 
     steps:
@@ -21,12 +40,19 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
 
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Run package tests
-        run: swift test --package-path KVMCore
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: DerivedData
+          key: dd-macos-${{ runner.os }}-${{ hashFiles('project.yml', 'KVMCore/Sources/**', 'KVMConsole/**') }}
+          restore-keys: |
+            dd-macos-${{ runner.os }}-
 
       - name: Run macOS tests
         run: |
@@ -34,10 +60,39 @@ jobs:
             -project KVMConsole.xcodeproj \
             -scheme KVMConsole \
             -destination 'platform=macOS' \
+            -derivedDataPath ./DerivedData \
+            -quiet \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
             DEVELOPMENT_TEAM=
+
+  ipad:
+    name: iPadOS Tests (KVMConsoleiPad)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: DerivedData
+          key: dd-ipad-${{ runner.os }}-${{ hashFiles('project.yml', 'KVMCore/Sources/**', 'KVMConsoleiPad/**') }}
+          restore-keys: |
+            dd-ipad-${{ runner.os }}-
 
       - name: Run iPadOS tests
         run: |
@@ -45,6 +100,11 @@ jobs:
             -project KVMConsole.xcodeproj \
             -scheme KVMConsoleiPad \
             -destination 'platform=iOS Simulator,name=iPad Pro 11-inch (M5)' \
+            -derivedDataPath ./DerivedData \
+            -quiet \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
