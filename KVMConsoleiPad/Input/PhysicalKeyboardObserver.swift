@@ -10,7 +10,9 @@ import GameController
 final class PhysicalKeyboardObserver: ObservableObject {
     @Published private(set) var isConnected: Bool
 
-    private var observers: [NSObjectProtocol] = []
+    // `nonisolated(unsafe)`: this @MainActor class's deinit is nonisolated and must
+    // remove its observers; deinit has exclusive access, so the unchecked access is safe.
+    private nonisolated(unsafe) var observers: [NSObjectProtocol] = []
 
     init() {
         isConnected = GCKeyboard.coalesced != nil
