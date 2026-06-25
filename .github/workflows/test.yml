@@ -46,9 +46,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Toolchain version
-        run: echo "TOOLCHAIN_KEY=$(xcodebuild -version | shasum | cut -c1-12)" >> "$GITHUB_ENV"
-
       - name: Install XcodeGen
         run: |
           curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o /tmp/xcodegen.zip
@@ -58,21 +55,12 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Cache DerivedData
-        uses: actions/cache@v4
-        with:
-          path: DerivedData
-          key: dd-macos-${{ runner.os }}-${{ env.TOOLCHAIN_KEY }}-${{ hashFiles('project.yml', 'KVMCore/Sources/**', 'KVMConsole/**') }}
-          restore-keys: |
-            dd-macos-${{ runner.os }}-${{ env.TOOLCHAIN_KEY }}-
-
       - name: Run macOS tests
         run: |
           xcodebuild test \
             -project KVMConsole.xcodeproj \
             -scheme KVMConsole \
             -destination 'platform=macOS' \
-            -derivedDataPath ./DerivedData \
             -quiet \
             -skipPackagePluginValidation \
             -skipMacroValidation \
@@ -98,9 +86,6 @@ jobs:
         # if it isn't ready in time, the test step's xcodebuild boots it itself.
         run: nohup xcrun simctl boot 'iPad Pro 11-inch (M5)' >/dev/null 2>&1 &
 
-      - name: Toolchain version
-        run: echo "TOOLCHAIN_KEY=$(xcodebuild -version | shasum | cut -c1-12)" >> "$GITHUB_ENV"
-
       - name: Install XcodeGen
         run: |
           curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o /tmp/xcodegen.zip
@@ -110,21 +95,12 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Cache DerivedData
-        uses: actions/cache@v4
-        with:
-          path: DerivedData
-          key: dd-ipad-${{ runner.os }}-${{ env.TOOLCHAIN_KEY }}-${{ hashFiles('project.yml', 'KVMCore/Sources/**', 'KVMConsoleiPad/**') }}
-          restore-keys: |
-            dd-ipad-${{ runner.os }}-${{ env.TOOLCHAIN_KEY }}-
-
       - name: Run iPadOS tests
         run: |
           xcodebuild test \
             -project KVMConsole.xcodeproj \
             -scheme KVMConsoleiPad \
             -destination 'platform=iOS Simulator,name=iPad Pro 11-inch (M5)' \
-            -derivedDataPath ./DerivedData \
             -quiet \
             -skipPackagePluginValidation \
             -skipMacroValidation \
