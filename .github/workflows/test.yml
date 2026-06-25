@@ -91,10 +91,12 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Boot simulator
-        # Kick off the simulator boot now so it warms up in parallel with the
-        # XcodeGen install and the app build below; simctl returns immediately
-        # and the device finishes booting off the critical path.
-        run: xcrun simctl boot 'iPad Pro 11-inch (M5)' || true
+        # Kick off the simulator boot in the background so it warms up in
+        # parallel with the XcodeGen install and the app build below. The boot
+        # is carried out by the CoreSimulator daemon, so this step returns
+        # immediately and the device finishes booting off the critical path;
+        # if it isn't ready in time, the test step's xcodebuild boots it itself.
+        run: nohup xcrun simctl boot 'iPad Pro 11-inch (M5)' >/dev/null 2>&1 &
 
       - name: Toolchain version
         run: echo "TOOLCHAIN_KEY=$(xcodebuild -version | shasum | cut -c1-12)" >> "$GITHUB_ENV"
