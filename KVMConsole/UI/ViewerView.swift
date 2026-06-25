@@ -59,12 +59,6 @@ struct ViewerView: View {
                     .frame(maxHeight: .infinity, alignment: .top)
             }
 
-            if model.isFullscreen {
-                captureStatusBadge
-                    .transition(.opacity)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            }
-
             if model.passwordPrompt != nil {
                 passwordPromptOverlay
             }
@@ -167,6 +161,17 @@ struct ViewerView: View {
                   : "Natural scroll direction — click to invert")
         }
 
+        ToolbarItem(placement: .primaryAction) {
+            Group {
+                if captureStatus == .limitedFullscreen {
+                    Button { openAccessibilitySettings() } label: { captureStatusLabelView }
+                } else {
+                    captureStatusLabelView
+                }
+            }
+            .help(captureStatusHelp)
+        }
+
         #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             ToolbarSpacer(.fixed, placement: .primaryAction)
@@ -238,84 +243,76 @@ struct ViewerView: View {
             .padding(.top, 60)
     }
 
-    private var captureStatusBadge: some View {
-        Button {
-            if effectiveFullscreenKeyCaptureMode == .limited {
-                openAccessibilitySettings()
-            }
-        } label: {
-            Label(captureStatusLabel, systemImage: captureStatusSymbol)
-                .font(.caption.weight(.semibold))
-                .labelStyle(.titleAndIcon)
-                .foregroundStyle(captureStatusForeground)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.regularMaterial, in: Capsule())
-                .overlay {
-                    Capsule()
-                        .stroke(captureStatusBorder, lineWidth: 1)
-                }
-        }
-        .buttonStyle(.plain)
-        .disabled(effectiveFullscreenKeyCaptureMode != .limited)
-        .help(captureStatusHelp)
-        .padding(.top, 64)
-        .padding(.trailing, 16)
+    private var captureStatusLabelView: some View {
+        Label(captureStatusLabel, systemImage: captureStatusSymbol)
+            .font(.callout)
+            .labelStyle(.titleAndIcon)
+            .foregroundStyle(captureStatusForeground)
     }
 
     private var fullscreenBannerText: String {
-        switch effectiveFullscreenKeyCaptureMode {
+        switch captureStatus {
         case .allKeys:
             return "Capturing all keys - triple-Esc to release"
-        case .limited:
+        case .limitedFullscreen:
             return "Limited capture - Cmd+Space and system shortcuts won't reach the remote. Enable Accessibility in System Settings."
-        case .off:
+        case .limitedWindowed, .off:
             return "Keyboard capture off"
         }
     }
 
-    private var effectiveFullscreenKeyCaptureMode: FullscreenKeyCaptureMode {
-        model.isKeyboardCaptureEnabled ? model.fullscreenKeyCaptureMode : .off
+    private enum CaptureStatusDisplay {
+        case allKeys           // fullscreen, Accessibility granted
+        case limitedFullscreen // fullscreen, Accessibility not granted (actionable)
+        case limitedWindowed   // windowed, capture on (normal, non-actionable)
+        case off               // capture disabled
+    }
+
+    private var captureStatus: CaptureStatusDisplay {
+        guard model.isKeyboardCaptureEnabled else { return .off }
+        if model.isFullscreen {
+            switch model.fullscreenKeyCaptureMode {
+            case .allKeys: return .allKeys
+            case .limited: return .limitedFullscreen
+            case .off:     return .off
+            }
+        }
+        return .limitedWindowed
     }
 
     private var captureStatusLabel: String {
-        switch effectiveFullscreenKeyCaptureMode {
+        switch captureStatus {
         case .allKeys: return "All keys"
-        case .limited: return "Limited keys"
+        case .limitedFullscreen, .limitedWindowed: return "Limited keys"
         case .off: return "Capture off"
         }
     }
 
     private var captureStatusSymbol: String {
-        switch effectiveFullscreenKeyCaptureMode {
+        switch captureStatus {
         case .allKeys: return "keyboard.badge.ellipsis"
-        case .limited: return "exclamationmark.triangle.fill"
+        case .limitedFullscreen: return "exclamationmark.triangle.fill"
+        case .limitedWindowed: return "keyboard"
         case .off: return "keyboard.badge.eye"
         }
     }
 
     private var captureStatusForeground: Color {
-        switch effectiveFullscreenKeyCaptureMode {
+        switch captureStatus {
         case .allKeys: return .green
-        case .limited: return .orange
-        case .off: return .secondary
-        }
-    }
-
-    private var captureStatusBorder: Color {
-        switch effectiveFullscreenKeyCaptureMode {
-        case .allKeys: return .green.opacity(0.55)
-        case .limited: return .orange.opacity(0.7)
-        case .off: return .secondary.opacity(0.45)
+        case .limitedFullscreen: return .orange
+        case .limitedWindowed, .off: return .secondary
         }
     }
 
     private var captureStatusHelp: String {
-        switch effectiveFullscreenKeyCaptureMode {
+        switch captureStatus {
         case .allKeys:
             return "All fullscreen keys are forwarded to the host"
-        case .limited:
+        case .limitedFullscreen:
             return "Open Accessibility settings to allow all-key capture"
+        case .limitedWindowed:
+            return "System shortcuts (Cmd-Tab, Cmd-Space) aren't forwarded in a window"
         case .off:
             return "Keyboard forwarding is off"
         }
