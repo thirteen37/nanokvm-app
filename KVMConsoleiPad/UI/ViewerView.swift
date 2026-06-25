@@ -34,10 +34,14 @@ struct ViewerHostView: View {
 struct ViewerView: View {
     @StateObject private var model: ViewerViewModel
     @StateObject private var keyboardObserver = PhysicalKeyboardObserver()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var modifierState = ModifierKeyState()
     @State private var showModifierBar = true
     @State private var keyboardFocusToken = 0
     @State private var pendingVirtualKey: VirtualKeyTap?
+    // True only while a stream was paused because THIS window went to the background,
+    // so we auto-resume on return without reviving a manually-disconnected session.
+    @State private var pausedForBackground = false
 
     init(device: Device, onConnected: ((Device.ID) -> Void)? = nil) {
         _model = StateObject(wrappedValue: ViewerViewModel(device: device, onConnected: onConnected))
@@ -66,8 +70,29 @@ struct ViewerView: View {
         .background(Color.black)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        .onChange(of: scenePhase) { _, newPhase in
+            handleScenePhase(newPhase)
+        }
         .onDisappear {
             model.disconnect()
+        }
+    }
+
+    private func handleScenePhase(_ phase: ScenePhase) {
+        let sessionIsLive = model.isStreaming || model.state == .connecting
+        switch ScenePhasePausePolicy.action(
+            phase: phase,
+            sessionIsLive: sessionIsLive,
+            isPaused: pausedForBackground
+        ) {
+        case .pause:
+            pausedForBackground = true
+            model.disconnect()
+        case .resume:
+            pausedForBackground = false
+            model.reconnect()
+        case .none:
+            break
         }
     }
 

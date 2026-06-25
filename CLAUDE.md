@@ -64,7 +64,7 @@ Release pipeline is documented in `DeveloperRelease.md`. One published GitHub Re
 - `Assets.xcassets/AppIcon`
 
 `KVMConsoleiPad/` — iPadOS app target.
-- `App/KVMConsoleiPadApp.swift` — single `WindowGroup` with a `NavigationStack`; the Connection list pushes the Viewer (one connection at a time, no multi-scene)
+- `App/KVMConsoleiPadApp.swift` — two scenes mirroring macOS: a `WindowGroup` Connections list plus a value-parameterized `WindowGroup("Viewer", for: Device.ID.self)`; connecting opens a separate viewer window so devices run side-by-side under Stage Manager (`UIApplicationSupportsMultipleScenes`)
 - `UI/` — `ViewerView`, `ViewerHostView`, `ModifierKeyBar` (Ctrl/Alt/Cmd/Shift/Win on-screen bar, tap = momentary, long-press = lock)
 - `Input/` — `KeyboardCaptureView` (`UIPress`/`UIKey`), `PointerCaptureView` (`UIHover`/`UIPan`/`UITap`)
 - `Video/VideoRenderView.swift` — `UIViewRepresentable` wrapper over `SampleBufferDisplay`
@@ -81,4 +81,4 @@ Release pipeline is documented in `DeveloperRelease.md`. One published GitHub Re
 - NanoKVM API responses follow NanoKVM's `{code, msg, data}` envelope — see `NanoKVMClient`; GLKVM uses PiKVM-shaped REST and WebSocket messages.
 - Passwords are stored per-device in the Keychain via `KeychainPasswordStore`, never in the saved-devices JSON.
 - macOS fullscreen exit is triple-Escape (`FullscreenKeyCapture`). iPad has no fullscreen capture mode.
-- iPad supports a single active KVM connection at a time (single-scene NavigationStack); macOS allows multiple viewer windows side-by-side.
+- Both platforms support multiple simultaneous viewer windows. On iPad an inactive (backgrounded) viewer pauses its stream via `ScenePhasePausePolicy` (scene-phase-driven `disconnect()`/`reconnect()`) and auto-resumes only the sessions it paused; `.inactive` is ignored so true side-by-side windows keep streaming.

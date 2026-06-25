@@ -4,20 +4,25 @@ import SwiftUI
 @main
 struct KVMConsoleiPadApp: App {
     @StateObject private var devicesStore = SavedDevicesStore()
-    @State private var connectedDeviceID: Device.ID?
 
     var body: some Scene {
-        WindowGroup("KVM Console") {
+        // Connections list. Connecting to a device opens a separate Viewer window
+        // (ConnectionManagerView falls back to openWindow(value:) when given no
+        // onConnect callback), so two devices can run side-by-side under Stage Manager.
+        WindowGroup("KVM Console", id: "connections") {
             NavigationStack {
-                ConnectionManagerView { device in
-                    connectedDeviceID = device.id
-                }
-                .environmentObject(devicesStore)
-                .navigationDestination(item: $connectedDeviceID) { deviceID in
-                    ViewerHostView(deviceID: deviceID)
-                        .environmentObject(devicesStore)
-                }
+                ConnectionManagerView()
             }
+            .environmentObject(devicesStore)
+        }
+
+        // One Viewer window per Device.ID. Wrapped in its own NavigationStack so the
+        // viewer's toolbar renders inside the new window rather than the Connections nav.
+        WindowGroup("Viewer", id: "viewer", for: Device.ID.self) { $deviceID in
+            NavigationStack {
+                ViewerHostView(deviceID: deviceID)
+            }
+            .environmentObject(devicesStore)
         }
     }
 }

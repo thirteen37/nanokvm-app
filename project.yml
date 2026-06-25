@@ -96,6 +96,8 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         GCSupportsControllerUserInteraction: true
         LSRequiresIPhoneOS: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         NSLocalNetworkUsageDescription: "KVM Console connects to your KVM device over the local network."
