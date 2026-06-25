@@ -10,6 +10,11 @@ on:
 permissions:
   contents: read
 
+# Pinned XcodeGen release. We download the prebuilt binary instead of
+# `brew install xcodegen`, which spends ~2 min in Homebrew overhead per job.
+env:
+  XCODEGEN_VERSION: "2.45.4"
+
 jobs:
   package:
     name: Package Tests (KVMCore)
@@ -45,9 +50,10 @@ jobs:
         run: echo "TOOLCHAIN_KEY=$(xcodebuild -version | shasum | cut -c1-12)" >> "$GITHUB_ENV"
 
       - name: Install XcodeGen
-        run: brew install xcodegen
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o /tmp/xcodegen.zip
+          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
+          echo "/tmp/xcodegen-dist/xcodegen/bin" >> "$GITHUB_PATH"
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -94,9 +100,10 @@ jobs:
         run: echo "TOOLCHAIN_KEY=$(xcodebuild -version | shasum | cut -c1-12)" >> "$GITHUB_ENV"
 
       - name: Install XcodeGen
-        run: brew install xcodegen
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o /tmp/xcodegen.zip
+          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
+          echo "/tmp/xcodegen-dist/xcodegen/bin" >> "$GITHUB_PATH"
 
       - name: Generate Xcode project
         run: xcodegen generate
