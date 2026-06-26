@@ -95,12 +95,29 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Toolchain version
+        run: echo "TOOLCHAIN_KEY=$(xcodebuild -version | shasum | cut -c1-12)" >> "$GITHUB_ENV"
+
+      - name: Cache iOS module cache
+        # The Clang/Swift module cache holds the precompiled iOS-SDK system
+        # modules (SwiftUI, UIKit, AVFoundation, ...). Building it from cold is
+        # the bulk of the iPad job's extra time on a fresh runner. It depends
+        # only on the SDK/compiler, not on our sources, so the key is just the
+        # toolchain version — it hits on every run after the first. We cache
+        # only this, not the rest of DerivedData (Xcode rebuilds the project
+        # objects anyway because checkout resets mtimes).
+        uses: actions/cache@v4
+        with:
+          path: DerivedData/ModuleCache.noindex
+          key: modulecache-ipad-${{ runner.os }}-${{ env.TOOLCHAIN_KEY }}
+
       - name: Run iPadOS tests
         run: |
           xcodebuild test \
             -project KVMConsole.xcodeproj \
             -scheme KVMConsoleiPad \
             -destination 'platform=iOS Simulator,name=iPad Pro 11-inch (M5)' \
+            -derivedDataPath ./DerivedData \
             -quiet \
             -skipPackagePluginValidation \
             -skipMacroValidation \
