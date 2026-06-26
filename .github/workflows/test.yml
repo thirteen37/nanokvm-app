@@ -10,9 +10,36 @@ on:
 permissions:
   contents: read
 
+# Pinned XcodeGen release. We download the prebuilt binary instead of
+# `brew install xcodegen`, which spends ~2 min in Homebrew overhead per job.
+env:
+  XCODEGEN_VERSION: "2.45.4"
+
 jobs:
-  test:
-    name: Unit Tests
+  package:
+    name: Package Tests (KVMCore)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Toolchain version
+        run: echo "TOOLCHAIN_KEY=$(xcodebuild -version | shasum | cut -c1-12)" >> "$GITHUB_ENV"
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: KVMCore/.build
+          key: spm-${{ runner.os }}-${{ env.TOOLCHAIN_KEY }}-${{ hashFiles('KVMCore/Package.swift', 'KVMCore/Sources/**', 'KVMCore/Tests/**') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ env.TOOLCHAIN_KEY }}-
+
+      - name: Run package tests
+        run: swift test --package-path KVMCore
+
+  macos:
+    name: macOS Tests (KVMConsole)
     runs-on: macos-latest
 
     steps:
@@ -20,13 +47,13 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o /tmp/xcodegen.zip
+          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
+          echo "/tmp/xcodegen-dist/xcodegen/bin" >> "$GITHUB_PATH"
 
       - name: Generate Xcode project
         run: xcodegen generate
-
-      - name: Run package tests
-        run: swift test --package-path KVMCore
 
       - name: Run macOS tests
         run: |
@@ -34,10 +61,55 @@ jobs:
             -project KVMConsole.xcodeproj \
             -scheme KVMConsole \
             -destination 'platform=macOS' \
+            -quiet \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
             DEVELOPMENT_TEAM=
+
+  ipad:
+    name: iPadOS Tests (KVMConsoleiPad)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Boot simulator
+        # Kick off the simulator boot in the background so it warms up in
+        # parallel with the XcodeGen install and the app build below. The boot
+        # is carried out by the CoreSimulator daemon, so this step returns
+        # immediately and the device finishes booting off the critical path;
+        # if it isn't ready in time, the test step's xcodebuild boots it itself.
+        run: nohup xcrun simctl boot 'iPad Pro 11-inch (M5)' >/dev/null 2>&1 &
+
+      - name: Install XcodeGen
+        run: |
+          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o /tmp/xcodegen.zip
+          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
+          echo "/tmp/xcodegen-dist/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Toolchain version
+        run: echo "TOOLCHAIN_KEY=$(xcodebuild -version | shasum | cut -c1-12)" >> "$GITHUB_ENV"
+
+      - name: Cache iOS module cache
+        # The Clang/Swift module cache holds the precompiled iOS-SDK system
+        # modules (SwiftUI, UIKit, AVFoundation, ...). Building it from cold is
+        # the bulk of the iPad job's extra time on a fresh runner. It depends
+        # only on the SDK/compiler, not on our sources, so the key is just the
+        # toolchain version — it hits on every run after the first. We cache
+        # only this, not the rest of DerivedData (Xcode rebuilds the project
+        # objects anyway because checkout resets mtimes).
+        uses: actions/cache@v4
+        with:
+          path: DerivedData/ModuleCache.noindex
+          key: modulecache-ipad-${{ runner.os }}-${{ env.TOOLCHAIN_KEY }}
 
       - name: Run iPadOS tests
         run: |
@@ -45,6 +117,11 @@ jobs:
             -project KVMConsole.xcodeproj \
             -scheme KVMConsoleiPad \
             -destination 'platform=iOS Simulator,name=iPad Pro 11-inch (M5)' \
+            -derivedDataPath ./DerivedData \
+            -quiet \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
