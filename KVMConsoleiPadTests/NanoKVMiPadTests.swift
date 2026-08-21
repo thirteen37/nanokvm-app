@@ -116,6 +116,45 @@ final class KVMConsoleiPadTests: XCTestCase {
         )
     }
 
+    /// The two-finger tap has to be arbitrated against pan and pinch differently, and the
+    /// difference was established by running real multi-touch through `GestureHarnessUITests`:
+    ///
+    /// - The **pan** claims two touches the moment they land and begins before the tap can
+    ///   complete, so it must wait for the tap to fail. That is what makes the tap fire at all.
+    /// - The **pinch** must NOT wait: making it wait starves it completely, so a spread fires a
+    ///   right click instead of zooming. It is kept off the tap by mutual exclusion instead —
+    ///   a pinch begins as soon as the fingers move, which cancels the tap.
+    @MainActor
+    func test_twoFingerTapArbitratesAgainstPanAndPinchDifferently() {
+        let view = PointerCaptureUIView()
+        let recognizers = view.gestureRecognizers ?? []
+        let taps = recognizers.compactMap { $0 as? UITapGestureRecognizer }
+        guard
+            let twoFinger = taps.first(where: { $0.numberOfTouchesRequired == 2 }),
+            let pinch = recognizers.compactMap({ $0 as? UIPinchGestureRecognizer }).first,
+            let pan = recognizers.compactMap({ $0 as? UIPanGestureRecognizer }).first
+        else {
+            return XCTFail("expected a two-finger tap, a pinch and a pan on the capture view")
+        }
+
+        XCTAssertTrue(
+            view.gestureRecognizer(pan, shouldRequireFailureOf: twoFinger),
+            "without this the pan begins first and the two-finger tap never fires"
+        )
+        XCTAssertFalse(
+            view.gestureRecognizer(pinch, shouldRequireFailureOf: twoFinger),
+            "making the pinch wait starves it: a spread fires a right click instead of zooming"
+        )
+        XCTAssertFalse(
+            view.gestureRecognizer(pinch, shouldRecognizeSimultaneouslyWith: twoFinger),
+            "otherwise a spread both zooms and fires a right click"
+        )
+        XCTAssertTrue(
+            view.gestureRecognizer(pinch, shouldRecognizeSimultaneouslyWith: pan),
+            "pinch and pan still coexist so zooming doesn't fail-cancel wheel tracking"
+        )
+    }
+
     // MARK: Synthesized tap dwell
 
     @MainActor

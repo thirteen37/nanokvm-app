@@ -51,6 +51,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
     private let clickSequencer = SynthesizedTapSequencer()
     private weak var pinchRecognizer: UIPinchGestureRecognizer?
     private weak var pointerPanRecognizer: UIPanGestureRecognizer?
+    private weak var twoFingerTapRecognizer: UITapGestureRecognizer?
     private var pinchAnchorVideo: CGPoint?
 
     override init(frame: CGRect) {
@@ -88,12 +89,12 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
 
         // The only way to right-click from a bare touchscreen. A trackpad's two-finger tap already
         // arrives as an indirect secondary click, so this one is restricted to direct touches to
-        // keep the two from both firing. A stationary two-finger tap starts neither the pan nor the
-        // pinch — both need movement — so wheel scrolling and zoom are unaffected.
+        // keep the two from both firing.
         let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleSecondaryTap(_:)))
         twoFingerTap.numberOfTouchesRequired = 2
         twoFingerTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         addGestureRecognizer(twoFingerTap)
+        twoFingerTapRecognizer = twoFingerTap
     }
 
     required init?(coder: NSCoder) {
@@ -293,9 +294,31 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool {
+        // A pinch and the two-finger tap must be mutually exclusive, or spreading two fingers
+        // zooms *and* fires a right click — the tap's movement tolerance is measured loosely
+        // enough that a symmetric spread still looks stationary to it. A pinch begins as soon as
+        // the fingers move, which cancels the tap; a tap that stays still never starts a pinch.
+        if let twoFingerTapRecognizer,
+           gestureRecognizer === twoFingerTapRecognizer || other === twoFingerTapRecognizer {
+            return false
+        }
         // Pinch should coexist with the pointer pan so two-finger zoom/pan doesn't fail-cancel
         // the pan's wheel-scroll tracking (we suppress wheel emission while pinch is active).
         return true
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRequireFailureOf other: UIGestureRecognizer
+    ) -> Bool {
+        // The pan claims two touches the moment they land and begins before the tap can complete,
+        // which is why the two-finger tap never fired. Making it wait for the tap to fail costs
+        // nothing in practice: any real scroll moves the fingers, which fails the tap at about the
+        // threshold the pan needs anyway. The pinch is deliberately NOT here — making it wait
+        // starves it entirely, so a spread fires a right click instead of zooming. Pinch is kept
+        // off the tap by the mutual-exclusion rule above instead.
+        guard let twoFingerTapRecognizer, other === twoFingerTapRecognizer else { return false }
+        return gestureRecognizer === pointerPanRecognizer
     }
 }
 

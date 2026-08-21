@@ -20,7 +20,7 @@ settings:
     # Single source of truth for app version, shared by both targets via
     # $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION) references in their
     # Info.plist. CI overrides CURRENT_PROJECT_VERSION per release (timestamp).
-    MARKETING_VERSION: "1.0.6"
+    MARKETING_VERSION: "1.0.7"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   KVMConsole:
@@ -122,6 +122,38 @@ targets:
         SWIFT_STRICT_CONCURRENCY: complete
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
+  GestureHarness:
+    # UI-test host only — never shipped. Exists so GestureHarnessUITests can drive real
+    # multi-touch against PointerCaptureView; recognizer arbitration cannot be unit tested.
+    type: application
+    platform: iOS
+    sources:
+      - GestureHarness
+      # The real files under test, compiled into the harness — not a copy of them.
+      - KVMConsoleiPad/Input/PointerCaptureView.swift
+      - KVMConsoleiPad/Input/SynthesizedTapSequencer.swift
+    dependencies:
+      - package: KVMCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.lyx.KVMConsole.GestureHarness
+        TARGETED_DEVICE_FAMILY: "2"
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  GestureHarnessUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - GestureHarnessUITests
+    dependencies:
+      - target: GestureHarness
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.lyx.GestureHarnessUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: GestureHarness
   KVMConsoleiPadTests:
     type: bundle.unit-test
     platform: iOS
@@ -151,3 +183,13 @@ schemes:
     test:
       targets:
         - KVMConsoleiPadTests
+  GestureHarness:
+    # Deliberately separate from the KVMConsoleiPad scheme: UI tests are slow and flakier than
+    # unit tests, so they run on demand rather than on every PR.
+    build:
+      targets:
+        GestureHarness: all
+        GestureHarnessUITests: [test]
+    test:
+      targets:
+        - GestureHarnessUITests
