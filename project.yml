@@ -20,7 +20,7 @@ settings:
     # Single source of truth for app version, shared by both targets via
     # $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION) references in their
     # Info.plist. CI overrides CURRENT_PROJECT_VERSION per release (timestamp).
-    MARKETING_VERSION: "1.0.4"
+    MARKETING_VERSION: "1.0.5"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   KVMConsole:
