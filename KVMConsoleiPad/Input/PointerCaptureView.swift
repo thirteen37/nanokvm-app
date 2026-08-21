@@ -294,6 +294,14 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool {
+        // A pinch and the two-finger tap must be mutually exclusive, or spreading two fingers
+        // zooms *and* fires a right click — the tap's movement tolerance is measured loosely
+        // enough that a symmetric spread still looks stationary to it. A pinch begins as soon as
+        // the fingers move, which cancels the tap; a tap that stays still never starts a pinch.
+        if let twoFingerTapRecognizer,
+           gestureRecognizer === twoFingerTapRecognizer || other === twoFingerTapRecognizer {
+            return false
+        }
         // Pinch should coexist with the pointer pan so two-finger zoom/pan doesn't fail-cancel
         // the pan's wheel-scroll tracking (we suppress wheel emission while pinch is active).
         return true
@@ -303,13 +311,14 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRequireFailureOf other: UIGestureRecognizer
     ) -> Bool {
-        // Pinch and pan both claim two touches the moment they land, and whichever begins first
-        // takes the gesture — which is why a two-finger tap registered as a zoom that went
-        // nowhere instead of a right click. Making them wait for the tap to fail costs nothing in
-        // practice: any real zoom or scroll moves the fingers, which fails the tap immediately.
-        // Only holding two fingers still defers them, and that is the tap itself.
+        // The pan claims two touches the moment they land and begins before the tap can complete,
+        // which is why the two-finger tap never fired. Making it wait for the tap to fail costs
+        // nothing in practice: any real scroll moves the fingers, which fails the tap at about the
+        // threshold the pan needs anyway. The pinch is deliberately NOT here — making it wait
+        // starves it entirely, so a spread fires a right click instead of zooming. Pinch is kept
+        // off the tap by the mutual-exclusion rule above instead.
         guard let twoFingerTapRecognizer, other === twoFingerTapRecognizer else { return false }
-        return gestureRecognizer === pinchRecognizer || gestureRecognizer === pointerPanRecognizer
+        return gestureRecognizer === pointerPanRecognizer
     }
 }
 
