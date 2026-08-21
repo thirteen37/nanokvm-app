@@ -32,7 +32,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
     var isCaptureEnabled = false {
         didSet {
             if !isCaptureEnabled {
-                releaseActiveDragIfNeeded()
+                releaseHeldButtons()
             }
         }
     }
@@ -44,6 +44,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
     private let mouseReportBuilder = HIDMouseAbsoluteReportBuilder()
     private var scrollAccumulator = MouseScrollAccumulator()
     private var activeDragButtonNumber: Int?
+    private let clickSequencer = SynthesizedTapSequencer()
     private weak var pinchRecognizer: UIPinchGestureRecognizer?
     private weak var pointerPanRecognizer: UIPanGestureRecognizer?
     private var pinchAnchorVideo: CGPoint?
@@ -94,7 +95,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
         guard isCaptureEnabled else {
-            releaseActiveDragIfNeeded()
+            releaseHeldButtons()
             return
         }
         let location = recognizer.location(in: self)
@@ -110,6 +111,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
         switch recognizer.state {
         case .began:
             if let dragButtonNumber {
+                clickSequencer.flushPendingRelease()
                 activeDragButtonNumber = dragButtonNumber
                 emit(mouseReportBuilder.buttonDown(buttonNumber: dragButtonNumber, x: point.x, y: point.y))
             } else {
@@ -117,6 +119,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
             }
         case .changed:
             if activeDragButtonNumber == nil, let dragButtonNumber {
+                clickSequencer.flushPendingRelease()
                 activeDragButtonNumber = dragButtonNumber
                 emit(mouseReportBuilder.buttonDown(buttonNumber: dragButtonNumber, x: point.x, y: point.y))
             }
@@ -217,12 +220,21 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
         let effective = effectiveRect()
         let normalized = MouseCoordinateMapper.normalizedPoint(clientPoint: location, effectiveRect: effective)
         let point = MouseCoordinateMapper.absolutePoint(clientPoint: location, effectiveRect: effective)
-        emit(mouseReportBuilder.buttonDown(buttonNumber: buttonNumber, x: point.x, y: point.y))
-        emit(mouseReportBuilder.buttonUp(buttonNumber: buttonNumber, x: point.x, y: point.y))
+        clickSequencer.tap(
+            down: { [weak self] in
+                guard let self else { return }
+                self.emit(self.mouseReportBuilder.buttonDown(buttonNumber: buttonNumber, x: point.x, y: point.y))
+            },
+            up: { [weak self] in
+                guard let self else { return }
+                self.emit(self.mouseReportBuilder.buttonUp(buttonNumber: buttonNumber, x: point.x, y: point.y))
+            }
+        )
         zoom?.cursorNormalized = normalized
     }
 
-    private func releaseActiveDragIfNeeded() {
+    private func releaseHeldButtons() {
+        clickSequencer.flushPendingRelease()
         guard activeDragButtonNumber != nil else { return }
         activeDragButtonNumber = nil
         emit(mouseReportBuilder.reset())

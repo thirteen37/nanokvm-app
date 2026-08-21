@@ -59,6 +59,7 @@ final class KeyboardCaptureUIView: UIView, UIKeyInput {
     var onMomentaryModifiersConsumed: (@MainActor () -> Void)?
 
     private let builder = HIDKeyboardReportBuilder()
+    private let virtualKeySequencer = SynthesizedTapSequencer()
 
     override var canBecomeFirstResponder: Bool { true }
     var hasText: Bool { false }
@@ -115,6 +116,7 @@ final class KeyboardCaptureUIView: UIView, UIKeyInput {
             super.pressesCancelled(presses, with: event)
             return
         }
+        virtualKeySequencer.flushPendingRelease()
         emit(builder.reset())
         super.pressesCancelled(presses, with: event)
     }
@@ -138,14 +140,21 @@ final class KeyboardCaptureUIView: UIView, UIKeyInput {
         // Combine synthesized modifier bits with whatever real modifiers the builder is
         // currently tracking, then on release drop only the synthesized bits — this keeps a
         // hardware modifier (e.g. held BT-keyboard Shift) asserted on the host and prevents
-        // the synthesized one from sticking.
-        let down = HIDKeyboardReport(
-            modifier: builder.modifierByte | transientModifier,
-            keycodes: [usage]
+        // the synthesized one from sticking. The release re-reads the builder rather than
+        // capturing it, so a hardware modifier pressed during the hold survives too.
+        virtualKeySequencer.tap(
+            down: { [weak self] in
+                guard let self else { return }
+                self.emit(HIDKeyboardReport(
+                    modifier: self.builder.modifierByte | transientModifier,
+                    keycodes: [usage]
+                ))
+            },
+            up: { [weak self] in
+                guard let self else { return }
+                self.emit(HIDKeyboardReport(modifier: self.builder.modifierByte, keycodes: []))
+            }
         )
-        let up = HIDKeyboardReport(modifier: builder.modifierByte, keycodes: [])
-        emit(down)
-        emit(up)
     }
 
     private func withExtraModifiers(_ report: HIDKeyboardReport, eventModifiers: UIKeyModifierFlags) -> HIDKeyboardReport {
