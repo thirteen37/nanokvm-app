@@ -36,6 +36,7 @@ public final class ViewerViewModel: ObservableObject {
     public init(
         device: Device,
         passwordStore: PasswordStore = KeychainPasswordStore(),
+        session injectedSession: (any KVMSession)? = nil,
         onConnected: ((Device.ID) -> Void)? = nil
     ) {
         let renderCoordinator = SampleBufferRenderCoordinator(renderMode: Self.renderMode(for: device.kvmType))
@@ -43,7 +44,7 @@ public final class ViewerViewModel: ObservableObject {
         self.passwordStore = passwordStore
         self.onConnected = onConnected
         self.renderCoordinator = renderCoordinator
-        self.session = KVMSessionFactory.make(
+        self.session = injectedSession ?? KVMSessionFactory.make(
             for: device,
             passwordStore: passwordStore,
             renderCoordinator: renderCoordinator
