@@ -77,6 +77,30 @@ final class KVMConsoleiPadTests: XCTestCase {
         )
     }
 
+    // MARK: Tap button routing
+
+    /// A direct touch carries no buttons, and `buttonMaskRequired` is only evaluated for indirect
+    /// input — so without a touch-type restriction a finger tap matches the secondary recognizer
+    /// too, and UIKit lets that one win. Every tap then arrives at the host as a right click.
+    @MainActor
+    func test_secondaryTapIgnoresDirectTouches() {
+        let view = PointerCaptureUIView()
+        let taps = (view.gestureRecognizers ?? []).compactMap { $0 as? UITapGestureRecognizer }
+        let secondary = taps.first { $0.buttonMaskRequired == .secondary }
+        let primary = taps.first { $0.buttonMaskRequired == .primary }
+
+        XCTAssertEqual(
+            secondary?.allowedTouchTypes,
+            [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)],
+            "a finger tap must never reach the secondary recognizer"
+        )
+        XCTAssertNotNil(primary, "finger taps still need a primary recognizer to land on")
+        XCTAssertFalse(
+            primary?.allowedTouchTypes == [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)],
+            "the primary recognizer must keep accepting direct touches"
+        )
+    }
+
     // MARK: Synthesized tap dwell
 
     @MainActor

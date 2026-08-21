@@ -79,6 +79,11 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
 
         let secondaryTap = UITapGestureRecognizer(target: self, action: #selector(handleSecondaryTap(_:)))
         secondaryTap.buttonMaskRequired = .secondary
+        // `buttonMaskRequired` is only evaluated for indirect input devices, so on its own it does
+        // not stop a finger from matching this recognizer — a direct touch carries no buttons and
+        // satisfies both tap recognizers. UIKit then lets only one of them recognize, and this one
+        // wins, turning every tap into a right click. Restrict it to the input it is actually for.
+        secondaryTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
         addGestureRecognizer(secondaryTap)
     }
 
