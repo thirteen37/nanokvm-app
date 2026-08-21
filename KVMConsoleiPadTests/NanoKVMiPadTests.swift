@@ -101,6 +101,21 @@ final class KVMConsoleiPadTests: XCTestCase {
         )
     }
 
+    /// The only way to right-click without a trackpad or mouse attached.
+    @MainActor
+    func test_twoFingerTapIsTheTouchscreenRightClick() {
+        let view = PointerCaptureUIView()
+        let taps = (view.gestureRecognizers ?? []).compactMap { $0 as? UITapGestureRecognizer }
+        let twoFinger = taps.first { $0.numberOfTouchesRequired == 2 }
+
+        XCTAssertNotNil(twoFinger, "a bare touchscreen has no other way to send a secondary click")
+        XCTAssertEqual(
+            twoFinger?.allowedTouchTypes,
+            [NSNumber(value: UITouch.TouchType.direct.rawValue)],
+            "a trackpad two-finger tap already arrives as an indirect secondary click; both firing would double-click"
+        )
+    }
+
     // MARK: Synthesized tap dwell
 
     @MainActor

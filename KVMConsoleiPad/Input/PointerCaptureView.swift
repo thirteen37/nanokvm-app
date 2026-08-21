@@ -85,6 +85,15 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
         // wins, turning every tap into a right click. Restrict it to the input it is actually for.
         secondaryTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
         addGestureRecognizer(secondaryTap)
+
+        // The only way to right-click from a bare touchscreen. A trackpad's two-finger tap already
+        // arrives as an indirect secondary click, so this one is restricted to direct touches to
+        // keep the two from both firing. A stationary two-finger tap starts neither the pan nor the
+        // pinch — both need movement — so wheel scrolling and zoom are unaffected.
+        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleSecondaryTap(_:)))
+        twoFingerTap.numberOfTouchesRequired = 2
+        twoFingerTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        addGestureRecognizer(twoFingerTap)
     }
 
     required init?(coder: NSCoder) {
