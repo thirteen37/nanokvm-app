@@ -8,10 +8,12 @@ struct PointerCaptureView: UIViewRepresentable {
     let videoSize: CGSize?
     let zoom: ViewerZoomState
     let onMouseReport: @MainActor (HIDMouseAbsoluteReport) -> Void
+    let onMouseRelease: @MainActor (HIDMouseAbsoluteReport) -> Void
 
     func makeUIView(context: Context) -> PointerCaptureUIView {
         let view = PointerCaptureUIView()
         view.onMouseReport = onMouseReport
+        view.onMouseRelease = onMouseRelease
         view.isCaptureEnabled = isEnabled
         view.isScrollInverted = isScrollInverted
         view.videoSize = videoSize
@@ -21,6 +23,7 @@ struct PointerCaptureView: UIViewRepresentable {
 
     func updateUIView(_ uiView: PointerCaptureUIView, context: Context) {
         uiView.onMouseReport = onMouseReport
+        uiView.onMouseRelease = onMouseRelease
         uiView.isCaptureEnabled = isEnabled
         uiView.isScrollInverted = isScrollInverted
         uiView.videoSize = videoSize
@@ -32,7 +35,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
     var isCaptureEnabled = false {
         didSet {
             if !isCaptureEnabled {
-                releaseActiveDragIfNeeded()
+                releaseHeldButtons()
             }
         }
     }
@@ -40,10 +43,12 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
     var videoSize: CGSize?
     var zoom: ViewerZoomState?
     var onMouseReport: (@MainActor (HIDMouseAbsoluteReport) -> Void)?
+    var onMouseRelease: (@MainActor (HIDMouseAbsoluteReport) -> Void)?
 
     private let mouseReportBuilder = HIDMouseAbsoluteReportBuilder()
     private var scrollAccumulator = MouseScrollAccumulator()
     private var activeDragButtonNumber: Int?
+    private let clickSequencer = SynthesizedTapSequencer()
     private weak var pinchRecognizer: UIPinchGestureRecognizer?
     private weak var pointerPanRecognizer: UIPanGestureRecognizer?
     private var pinchAnchorVideo: CGPoint?
@@ -83,6 +88,9 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
 
     @objc private func handleHover(_ recognizer: UIHoverGestureRecognizer) {
         guard isCaptureEnabled else { return }
+        // `move` keeps the buttons byte, so emitting one while a synthesized click is still held
+        // would read on the host as a drag. The pointer catches up when the click releases.
+        guard !clickSequencer.isHoldingPress else { return }
         let location = recognizer.location(in: self)
         let effective = effectiveRect()
         let normalized = MouseCoordinateMapper.normalizedPoint(clientPoint: location, effectiveRect: effective)
@@ -94,7 +102,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
         guard isCaptureEnabled else {
-            releaseActiveDragIfNeeded()
+            releaseHeldButtons()
             return
         }
         let location = recognizer.location(in: self)
@@ -110,6 +118,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
         switch recognizer.state {
         case .began:
             if let dragButtonNumber {
+                clickSequencer.cancelAll()
                 activeDragButtonNumber = dragButtonNumber
                 emit(mouseReportBuilder.buttonDown(buttonNumber: dragButtonNumber, x: point.x, y: point.y))
             } else {
@@ -117,6 +126,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
             }
         case .changed:
             if activeDragButtonNumber == nil, let dragButtonNumber {
+                clickSequencer.cancelAll()
                 activeDragButtonNumber = dragButtonNumber
                 emit(mouseReportBuilder.buttonDown(buttonNumber: dragButtonNumber, x: point.x, y: point.y))
             }
@@ -217,15 +227,24 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
         let effective = effectiveRect()
         let normalized = MouseCoordinateMapper.normalizedPoint(clientPoint: location, effectiveRect: effective)
         let point = MouseCoordinateMapper.absolutePoint(clientPoint: location, effectiveRect: effective)
-        emit(mouseReportBuilder.buttonDown(buttonNumber: buttonNumber, x: point.x, y: point.y))
-        emit(mouseReportBuilder.buttonUp(buttonNumber: buttonNumber, x: point.x, y: point.y))
+        clickSequencer.tap(
+            down: { [weak self] in
+                guard let self else { return }
+                self.emit(self.mouseReportBuilder.buttonDown(buttonNumber: buttonNumber, x: point.x, y: point.y))
+            },
+            up: { [weak self] in
+                guard let self else { return }
+                self.emitRelease(self.mouseReportBuilder.buttonUp(buttonNumber: buttonNumber, x: point.x, y: point.y))
+            }
+        )
         zoom?.cursorNormalized = normalized
     }
 
-    private func releaseActiveDragIfNeeded() {
+    private func releaseHeldButtons() {
+        clickSequencer.cancelAll()
         guard activeDragButtonNumber != nil else { return }
         activeDragButtonNumber = nil
-        emit(mouseReportBuilder.reset())
+        emitRelease(mouseReportBuilder.reset())
     }
 
     // UIGestureRecognizer callbacks run on the main thread; assuming
@@ -236,6 +255,15 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
         guard let onMouseReport else { return }
         MainActor.assumeIsolated {
             onMouseReport(report)
+        }
+    }
+
+    /// Releases go through their own channel: by the time capture is switched off the guarded
+    /// path drops everything, which would strand a held button on the host.
+    private func emitRelease(_ report: HIDMouseAbsoluteReport) {
+        guard let onMouseRelease else { return }
+        MainActor.assumeIsolated {
+            onMouseRelease(report)
         }
     }
 

@@ -160,6 +160,19 @@ public final class ViewerViewModel: ObservableObject {
         session.sendMouseReport(report)
     }
 
+    /// Releases input that is still held, bypassing the capture guard on purpose.
+    ///
+    /// A button or key held when capture is switched off would otherwise stay pressed on the host
+    /// forever: every later report — including the release itself — is dropped by the guard above.
+    /// Only pass reports that clear held state.
+    public func sendInputRelease(mouse report: HIDMouseAbsoluteReport) {
+        session.sendMouseReport(report)
+    }
+
+    public func sendInputRelease(keyboard report: HIDKeyboardReport) {
+        session.sendKeyboardReport(report)
+    }
+
     public func powerOn() {
         performPowerAction { try await $0.powerOn() }
     }

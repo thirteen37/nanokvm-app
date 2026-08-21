@@ -76,4 +76,113 @@ final class KVMConsoleiPadTests: XCTestCase {
             ModifierBarVisibility.shouldShow(userEnabled: false, physicalKeyboardConnected: false)
         )
     }
+
+    // MARK: Synthesized tap dwell
+
+    @MainActor
+    func test_synthesizedTapHoldsButtonBeforeReleasing() async {
+        let sleeper = RecordingSleeper()
+        let sequencer = SynthesizedTapSequencer(sleep: { await sleeper.sleep($0) })
+        let log = TapLog()
+        let released = expectation(description: "release emitted")
+
+        sequencer.tap(
+            down: { log.append("down") },
+            up: { log.append("up"); released.fulfill() }
+        )
+
+        XCTAssertEqual(log.events, ["down"], "release must not be emitted in the same instant as the press")
+
+        await fulfillment(of: [released], timeout: 2)
+
+        XCTAssertEqual(log.events, ["down", "up"])
+        XCTAssertEqual(
+            sleeper.durations,
+            [SynthesizedTapSequencer.defaultPressDuration],
+            "the button has to be held long enough for the host to poll it"
+        )
+    }
+
+    /// `insertText` synthesizes a whole string's keystrokes in one pass, so taps queued while
+    /// another is still held must each get their own hold rather than collapsing.
+    @MainActor
+    func test_queuedTapsEachGetTheirOwnHold() async {
+        let sleeper = RecordingSleeper()
+        let sequencer = SynthesizedTapSequencer(sleep: { await sleeper.sleep($0) })
+        let log = TapLog()
+        let finished = expectation(description: "second release emitted")
+
+        sequencer.tap(down: { log.append("down1") }, up: { log.append("up1") })
+        sequencer.tap(down: { log.append("down2") }, up: { log.append("up2"); finished.fulfill() })
+
+        XCTAssertEqual(log.events, ["down1"], "the queued tap must wait for the held one to be released")
+
+        await fulfillment(of: [finished], timeout: 2)
+
+        XCTAssertEqual(log.events, ["down1", "up1", "down2", "up2"])
+        XCTAssertEqual(sleeper.durations.count, 2, "each tap gets its own hold")
+    }
+
+    // MARK: Virtual keys
+
+    @MainActor
+    func test_virtualKeyIsHeldRatherThanReleasedInTheSameInstant() async {
+        let view = KeyboardCaptureUIView()
+        let log = TapLog()
+        let released = expectation(description: "key release emitted")
+        view.onKeyboardReport = { _ in log.append("down") }
+        view.onKeyboardRelease = { _ in
+            log.append("up")
+            released.fulfill()
+        }
+
+        view.sendVirtualKey(usage: 0x04, transientModifier: HIDModifierBit.leftShift.rawValue)
+
+        XCTAssertEqual(log.events, ["down"], "the key release must not land in the same instant as the press")
+
+        await fulfillment(of: [released], timeout: 2)
+
+        XCTAssertEqual(log.events, ["down", "up"])
+    }
+
+    @MainActor
+    func test_disablingCaptureReleasesAHeldVirtualKey() {
+        let view = KeyboardCaptureUIView()
+        let log = TapLog()
+        view.onKeyboardReport = { _ in log.append("down") }
+        view.onKeyboardRelease = { _ in log.append("up") }
+        view.isCaptureEnabled = true
+
+        view.sendVirtualKey(usage: 0x04, transientModifier: 0)
+        XCTAssertEqual(log.events, ["down"])
+
+        view.isCaptureEnabled = false
+
+        XCTAssertEqual(log.events, ["down", "up"], "a key held when capture is switched off must be released")
+    }
+}
+
+/// Collects emitted tap phases by reference so the escaping down/up closures don't have to
+/// capture a mutable local.
+private final class TapLog {
+    private(set) var events: [String] = []
+
+    func append(_ event: String) {
+        events.append(event)
+    }
+}
+
+/// Stands in for `Task.sleep`: records the dwell that was asked for and returns immediately, so
+/// the tests assert ordering and duration without waiting on the clock.
+private final class RecordingSleeper: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedDurations: [Duration] = []
+
+    var durations: [Duration] {
+        lock.withLock { storedDurations }
+    }
+
+    func sleep(_ duration: Duration) async {
+        lock.withLock { storedDurations.append(duration) }
+    }
 }

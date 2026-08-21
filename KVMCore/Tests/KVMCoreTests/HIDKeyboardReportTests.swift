@@ -34,4 +34,15 @@ final class HIDKeyboardReportTests: XCTestCase {
         _ = builder.keyDown(usage: 0x04)
         XCTAssertEqual(builder.keyDown(usage: 0x04), HIDKeyboardReport(keycodes: [0x04]))
     }
+
+    func test_currentReportReflectsHeldKeysAndModifiers() {
+        let builder = HIDKeyboardReportBuilder()
+        _ = builder.modifierChanged(bit: HIDModifierBit.leftControl.rawValue, isPressed: true)
+        _ = builder.keyDown(usage: 0x04)
+
+        let report = builder.currentReport
+
+        XCTAssertEqual(report.modifier, HIDModifierBit.leftControl.rawValue)
+        XCTAssertEqual(report.keycodes, [0x04])
+    }
 }

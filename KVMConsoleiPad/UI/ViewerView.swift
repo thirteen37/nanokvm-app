@@ -113,7 +113,8 @@ struct ViewerView: View {
                 isScrollInverted: model.isScrollInverted,
                 videoSize: model.videoSize,
                 zoom: model.zoom,
-                onMouseReport: { report in model.sendMouseReport(report) }
+                onMouseReport: { report in model.sendMouseReport(report) },
+                onMouseRelease: { report in model.sendInputRelease(mouse: report) }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -123,6 +124,7 @@ struct ViewerView: View {
                 extraModifierByte: modifierState.activeModifierByte,
                 pendingVirtualKey: pendingVirtualKey,
                 onKeyboardReport: { report in model.sendKeyboardReport(report) },
+                onKeyboardRelease: { report in model.sendInputRelease(keyboard: report) },
                 onMomentaryModifiersConsumed: { modifierState.consumeMomentary() }
             )
             .frame(width: 1, height: 1)

@@ -33,16 +33,22 @@ public final class HIDKeyboardReportBuilder {
 
     public var modifierByte: UInt8 { modifier }
 
+    /// The keys and modifiers currently held. Callers that synthesize a keystroke release it by
+    /// emitting this rather than an empty report, so real keys held at the same time survive.
+    public var currentReport: HIDKeyboardReport {
+        HIDKeyboardReport(modifier: modifier, keycodes: pressedKeys)
+    }
+
     public func keyDown(usage: UInt8) -> HIDKeyboardReport {
         if !pressedKeys.contains(usage), pressedKeys.count < HIDKeyboardReport.maxKeys {
             pressedKeys.append(usage)
         }
-        return currentReport()
+        return currentReport
     }
 
     public func keyUp(usage: UInt8) -> HIDKeyboardReport {
         pressedKeys.removeAll { $0 == usage }
-        return currentReport()
+        return currentReport
     }
 
     public func modifierChanged(bit: UInt8, isPressed: Bool) -> HIDKeyboardReport {
@@ -51,16 +57,13 @@ public final class HIDKeyboardReportBuilder {
         } else {
             modifier &= ~bit
         }
-        return currentReport()
+        return currentReport
     }
 
     public func reset() -> HIDKeyboardReport {
         modifier = 0
         pressedKeys.removeAll()
-        return currentReport()
+        return currentReport
     }
 
-    private func currentReport() -> HIDKeyboardReport {
-        HIDKeyboardReport(modifier: modifier, keycodes: pressedKeys)
-    }
 }
