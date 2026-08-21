@@ -14,11 +14,13 @@ struct KeyboardCaptureView: UIViewRepresentable {
     let extraModifierByte: UInt8
     let pendingVirtualKey: VirtualKeyTap?
     let onKeyboardReport: @MainActor (HIDKeyboardReport) -> Void
+    let onKeyboardRelease: @MainActor (HIDKeyboardReport) -> Void
     let onMomentaryModifiersConsumed: @MainActor () -> Void
 
     func makeUIView(context: Context) -> KeyboardCaptureUIView {
         let view = KeyboardCaptureUIView()
         view.onKeyboardReport = onKeyboardReport
+        view.onKeyboardRelease = onKeyboardRelease
         view.onMomentaryModifiersConsumed = onMomentaryModifiersConsumed
         view.isCaptureEnabled = isEnabled
         view.extraModifierByte = extraModifierByte
@@ -27,6 +29,7 @@ struct KeyboardCaptureView: UIViewRepresentable {
 
     func updateUIView(_ uiView: KeyboardCaptureUIView, context: Context) {
         uiView.onKeyboardReport = onKeyboardReport
+        uiView.onKeyboardRelease = onKeyboardRelease
         uiView.onMomentaryModifiersConsumed = onMomentaryModifiersConsumed
         uiView.isCaptureEnabled = isEnabled
         uiView.extraModifierByte = extraModifierByte
@@ -53,9 +56,16 @@ struct KeyboardCaptureView: UIViewRepresentable {
 }
 
 final class KeyboardCaptureUIView: UIView, UIKeyInput {
-    var isCaptureEnabled = false
+    var isCaptureEnabled = false {
+        didSet {
+            if !isCaptureEnabled {
+                virtualKeySequencer.cancelAll()
+            }
+        }
+    }
     var extraModifierByte: UInt8 = 0
     var onKeyboardReport: (@MainActor (HIDKeyboardReport) -> Void)?
+    var onKeyboardRelease: (@MainActor (HIDKeyboardReport) -> Void)?
     var onMomentaryModifiersConsumed: (@MainActor () -> Void)?
 
     private let builder = HIDKeyboardReportBuilder()
@@ -85,6 +95,7 @@ final class KeyboardCaptureUIView: UIView, UIKeyInput {
             super.pressesBegan(presses, with: event)
             return
         }
+        virtualKeySequencer.flushPendingRelease()
         for press in presses {
             guard let usage = press.key?.keyCode.rawValue, let keyUsage = UInt8(exactly: usage) else { continue }
             if let bit = HIDModifierBit.bit(forHIDUsage: keyUsage) {
@@ -117,7 +128,7 @@ final class KeyboardCaptureUIView: UIView, UIKeyInput {
             return
         }
         virtualKeySequencer.flushPendingRelease()
-        emit(builder.reset())
+        emitRelease(builder.reset())
         super.pressesCancelled(presses, with: event)
     }
 
@@ -152,7 +163,9 @@ final class KeyboardCaptureUIView: UIView, UIKeyInput {
             },
             up: { [weak self] in
                 guard let self else { return }
-                self.emit(HIDKeyboardReport(modifier: self.builder.modifierByte, keycodes: []))
+                // The builder's current state, not an empty report: a hardware key pressed during
+                // the hold is still down and must not be released along with the synthesized one.
+                self.emitRelease(self.builder.currentReport)
             }
         )
     }
@@ -172,6 +185,15 @@ final class KeyboardCaptureUIView: UIView, UIKeyInput {
         guard let onKeyboardReport else { return }
         MainActor.assumeIsolated {
             onKeyboardReport(report)
+        }
+    }
+
+    /// Releases go through their own channel: by the time capture is switched off the guarded
+    /// path drops everything, which would leave a key asserted — and auto-repeating — on the host.
+    private func emitRelease(_ report: HIDKeyboardReport) {
+        guard let onKeyboardRelease else { return }
+        MainActor.assumeIsolated {
+            onKeyboardRelease(report)
         }
     }
 

@@ -35,33 +35,48 @@ final class SynthesizedTapSequencer {
         self.sleep = sleep
     }
 
+    /// Whether a press is currently being held. Callers suppress pointer moves while it is true,
+    /// so a click can't turn into a drag just because the pointer drifted during the hold.
+    var isHoldingPress: Bool { pendingRelease != nil }
+
     /// Emits `down` now and `up` once the press has been held long enough to be observed.
     func tap(down: @escaping @MainActor () -> Void, up: @escaping @MainActor () -> Void) {
         queue.append((down, up))
-        guard holdTask == nil else { return }
         startNextTap()
     }
 
-    /// Emits a still-held release immediately and drops anything queued behind it — used when a
-    /// drag takes the button over, and when capture is turned off.
+    /// Emits a still-held release immediately, leaving anything queued behind it to drain. Use
+    /// this when the current press has to end early but the remaining input is still wanted — an
+    /// interrupted paste, say, whose remaining characters would otherwise vanish.
     func flushPendingRelease() {
         holdTask?.cancel()
         holdTask = nil
+        releasePendingIfNeeded()
+        startNextTap()
+    }
+
+    /// Releases the held press and discards everything queued behind it — for when the pending
+    /// input is no longer wanted at all: a drag taking the button over, or capture switching off.
+    func cancelAll() {
         queue.removeAll()
+        holdTask?.cancel()
+        holdTask = nil
         releasePendingIfNeeded()
     }
 
     private func startNextTap() {
-        guard !queue.isEmpty else { return }
+        guard holdTask == nil, !queue.isEmpty else { return }
         let tap = queue.removeFirst()
-        tap.down()
+        // Arm the release before running `down`, so a re-entrant flush from inside it sees a press
+        // to release rather than silently leaving one armed behind its back.
         pendingRelease = tap.up
         holdTask = Task { [weak self, pressDuration, sleep] in
             await sleep(pressDuration)
-            // A flush already emitted this release and cleared the queue.
+            // A flush already emitted this release.
             guard !Task.isCancelled else { return }
             self?.finishTap()
         }
+        tap.down()
     }
 
     private func finishTap() {

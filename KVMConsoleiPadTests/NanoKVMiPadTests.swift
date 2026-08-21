@@ -123,20 +123,6 @@ final class KVMConsoleiPadTests: XCTestCase {
         XCTAssertEqual(sleeper.durations.count, 2, "each tap gets its own hold")
     }
 
-    @MainActor
-    func test_flushPendingReleaseReleasesHeldTapAndDropsTheQueue() {
-        let sleeper = RecordingSleeper()
-        let sequencer = SynthesizedTapSequencer(sleep: { await sleeper.sleep($0) })
-        let log = TapLog()
-
-        sequencer.tap(down: { log.append("down1") }, up: { log.append("up1") })
-        sequencer.tap(down: { log.append("down2") }, up: { log.append("up2") })
-        sequencer.flushPendingRelease()
-        sequencer.flushPendingRelease()
-
-        XCTAssertEqual(log.events, ["down1", "up1"])
-    }
-
     // MARK: Virtual keys
 
     @MainActor
@@ -144,11 +130,10 @@ final class KVMConsoleiPadTests: XCTestCase {
         let view = KeyboardCaptureUIView()
         let log = TapLog()
         let released = expectation(description: "key release emitted")
-        view.onKeyboardReport = { report in
-            log.append(report.keycodes.isEmpty ? "up" : "down")
-            if report.keycodes.isEmpty {
-                released.fulfill()
-            }
+        view.onKeyboardReport = { _ in log.append("down") }
+        view.onKeyboardRelease = { _ in
+            log.append("up")
+            released.fulfill()
         }
 
         view.sendVirtualKey(usage: 0x04, transientModifier: HIDModifierBit.leftShift.rawValue)
@@ -158,6 +143,22 @@ final class KVMConsoleiPadTests: XCTestCase {
         await fulfillment(of: [released], timeout: 2)
 
         XCTAssertEqual(log.events, ["down", "up"])
+    }
+
+    @MainActor
+    func test_disablingCaptureReleasesAHeldVirtualKey() {
+        let view = KeyboardCaptureUIView()
+        let log = TapLog()
+        view.onKeyboardReport = { _ in log.append("down") }
+        view.onKeyboardRelease = { _ in log.append("up") }
+        view.isCaptureEnabled = true
+
+        view.sendVirtualKey(usage: 0x04, transientModifier: 0)
+        XCTAssertEqual(log.events, ["down"])
+
+        view.isCaptureEnabled = false
+
+        XCTAssertEqual(log.events, ["down", "up"], "a key held when capture is switched off must be released")
     }
 }
 
