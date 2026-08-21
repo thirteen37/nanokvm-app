@@ -116,6 +116,27 @@ final class KVMConsoleiPadTests: XCTestCase {
         )
     }
 
+    /// Pinch and pan both claim two touches as soon as they land, so without this the two-finger
+    /// tap loses the gesture to a zoom that goes nowhere and no right click is ever sent.
+    @MainActor
+    func test_pinchAndPanWaitForTheTwoFingerTapToFail() {
+        let view = PointerCaptureUIView()
+        let recognizers = view.gestureRecognizers ?? []
+        let taps = recognizers.compactMap { $0 as? UITapGestureRecognizer }
+        let twoFinger = try! XCTUnwrap(taps.first { $0.numberOfTouchesRequired == 2 })
+        let singleTap = try! XCTUnwrap(taps.first { $0.numberOfTouchesRequired == 1 })
+        let pinch = try! XCTUnwrap(recognizers.compactMap { $0 as? UIPinchGestureRecognizer }.first)
+        let pan = try! XCTUnwrap(recognizers.compactMap { $0 as? UIPanGestureRecognizer }.first)
+
+        XCTAssertTrue(view.gestureRecognizer(pinch, shouldRequireFailureOf: twoFinger))
+        XCTAssertTrue(view.gestureRecognizer(pan, shouldRequireFailureOf: twoFinger))
+
+        XCTAssertFalse(
+            view.gestureRecognizer(pinch, shouldRequireFailureOf: singleTap),
+            "a one-finger tap can never block a pinch, so waiting on it would only add latency"
+        )
+    }
+
     // MARK: Synthesized tap dwell
 
     @MainActor

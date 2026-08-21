@@ -51,6 +51,7 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
     private let clickSequencer = SynthesizedTapSequencer()
     private weak var pinchRecognizer: UIPinchGestureRecognizer?
     private weak var pointerPanRecognizer: UIPanGestureRecognizer?
+    private weak var twoFingerTapRecognizer: UITapGestureRecognizer?
     private var pinchAnchorVideo: CGPoint?
 
     override init(frame: CGRect) {
@@ -88,12 +89,12 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
 
         // The only way to right-click from a bare touchscreen. A trackpad's two-finger tap already
         // arrives as an indirect secondary click, so this one is restricted to direct touches to
-        // keep the two from both firing. A stationary two-finger tap starts neither the pan nor the
-        // pinch — both need movement — so wheel scrolling and zoom are unaffected.
+        // keep the two from both firing.
         let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleSecondaryTap(_:)))
         twoFingerTap.numberOfTouchesRequired = 2
         twoFingerTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         addGestureRecognizer(twoFingerTap)
+        twoFingerTapRecognizer = twoFingerTap
     }
 
     required init?(coder: NSCoder) {
@@ -296,6 +297,19 @@ final class PointerCaptureUIView: UIView, UIGestureRecognizerDelegate {
         // Pinch should coexist with the pointer pan so two-finger zoom/pan doesn't fail-cancel
         // the pan's wheel-scroll tracking (we suppress wheel emission while pinch is active).
         return true
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRequireFailureOf other: UIGestureRecognizer
+    ) -> Bool {
+        // Pinch and pan both claim two touches the moment they land, and whichever begins first
+        // takes the gesture — which is why a two-finger tap registered as a zoom that went
+        // nowhere instead of a right click. Making them wait for the tap to fail costs nothing in
+        // practice: any real zoom or scroll moves the fingers, which fails the tap immediately.
+        // Only holding two fingers still defers them, and that is the tap itself.
+        guard let twoFingerTapRecognizer, other === twoFingerTapRecognizer else { return false }
+        return gestureRecognizer === pinchRecognizer || gestureRecognizer === pointerPanRecognizer
     }
 }
 
