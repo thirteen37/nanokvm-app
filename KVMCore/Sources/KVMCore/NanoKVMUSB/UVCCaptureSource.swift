@@ -16,7 +16,9 @@ public enum UVCCaptureError: Error, LocalizedError {
         case .cameraAccessDenied:
             return "Camera access is denied. Grant KVM Console camera access in System Settings → Privacy & Security → Camera, then reconnect."
         case .deviceNotFound(let id):
-            return "Could not find USB video capture device (uniqueID=\(id)). It may have been unplugged."
+            return "Could not find USB video capture device (uniqueID=\(id)). It may have been "
+                + "unplugged, or more than one identical capture stick is attached — "
+                + "re-select it in Edit Device."
         case .cannotAddInput:
             return "AVCaptureSession refused the USB video device as an input."
         case .cannotAddOutput:

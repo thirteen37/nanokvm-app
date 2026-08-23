@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 
 public enum CH9329SerialError: Error, LocalizedError {
+    case portNotFound(path: String)
     case openFailed(path: String, errno: Int32)
     case configureFailed(errno: Int32)
     case writeFailed(errno: Int32)
@@ -10,6 +11,9 @@ public enum CH9329SerialError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .portNotFound(let path):
+            return "Serial port \(path) is no longer attached. If you moved the NanoKVM USB "
+                + "to another USB port, re-select it in Edit Device."
         case .openFailed(let path, let code):
             return "Could not open serial port \(path) (errno=\(code), \(String(cString: strerror(code))))"
         case .configureFailed(let code):

@@ -57,12 +57,27 @@ public final class NanoKVMUSBSession: KVMSession {
         let myGeneration = generation
         state = .connecting
 
-        guard let videoID = configuration.device.videoDeviceUniqueID, !videoID.isEmpty else {
+        guard let savedVideoID = configuration.device.videoDeviceUniqueID, !savedVideoID.isEmpty else {
             finishWithError(NanoKVMUSBError.missingVideoDevice)
             return
         }
-        guard let serialPath = configuration.device.serialDevicePath, !serialPath.isEmpty else {
+        guard let savedSerialPath = configuration.device.serialDevicePath, !savedSerialPath.isEmpty else {
             finishWithError(NanoKVMUSBError.missingSerialDevice)
+            return
+        }
+
+        // Both saved identifiers encode the USB port the stick was plugged into when it
+        // was picked, so moving it to another port invalidates them. Re-resolve against
+        // what's attached now before opening anything.
+        guard let videoID = USBKVMDeviceDiscovery.resolveVideoUniqueID(saved: savedVideoID) else {
+            finishWithError(UVCCaptureError.deviceNotFound(uniqueID: savedVideoID))
+            return
+        }
+        guard let serialPath = USBKVMDeviceDiscovery.resolveSerialPath(
+            saved: savedSerialPath,
+            videoUniqueID: videoID
+        ) else {
+            finishWithError(CH9329SerialError.portNotFound(path: savedSerialPath))
             return
         }
 

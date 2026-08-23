@@ -40,7 +40,7 @@ Release pipeline is documented in `DeveloperRelease.md`. One published GitHub Re
 - Swift 6.0, `SWIFT_STRICT_CONCURRENCY: complete`
 - macOS 15 / iPadOS 26 deployment target
 - iPadOS app: `TARGETED_DEVICE_FAMILY=2` (iPad only — no iPhone, no Catalyst)
-- macOS app: hardened runtime, app sandbox, `network.client` entitlement
+- macOS app: hardened runtime, **not** sandboxed (the App Sandbox was dropped to get raw `/dev/cu.*` access for NanoKVM USB); the only entitlement is `device.camera`
 - No external Swift packages — only Apple frameworks (SwiftUI, AppKit/UIKit, AVFoundation, VideoToolbox, CoreMedia, CoreVideo, Security)
 
 ## Layout

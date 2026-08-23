@@ -7,6 +7,15 @@ import IOKit.serial
 public struct USBSerialPort: Hashable, Sendable {
     public let path: String
     public let displayName: String
+    /// USB `locationID` of the device behind this port, used to pair it with the capture
+    /// chip on the same stick after a replug. `nil` when the IOKit walk can't find one.
+    public let locationID: UInt32?
+
+    public init(path: String, displayName: String, locationID: UInt32? = nil) {
+        self.path = path
+        self.displayName = displayName
+        self.locationID = locationID
+    }
 }
 
 @MainActor
@@ -41,10 +50,12 @@ public enum USBKVMDeviceDiscovery {
             defer { IOObjectRelease(service) }
             guard let path = stringProperty(service, key: kIOCalloutDeviceKey) else { continue }
             guard isLikelyUSBSerial(path: path) else { continue }
-            let productName = usbProductName(for: service)
-            let displayName = productName.map { "\($0) (\((path as NSString).lastPathComponent))" }
+            let usb = usbAttributes(for: service)
+            let displayName = usb.productName.map { "\($0) (\((path as NSString).lastPathComponent))" }
                 ?? (path as NSString).lastPathComponent
-            ports.append(USBSerialPort(path: path, displayName: displayName))
+            ports.append(
+                USBSerialPort(path: path, displayName: displayName, locationID: usb.locationID)
+            )
         }
 
         return ports.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
@@ -68,25 +79,81 @@ public enum USBKVMDeviceDiscovery {
         return raw.takeRetainedValue() as? String
     }
 
-    /// Walks up the IOKit parent chain until we hit a USB device node, then returns
-    /// its product/vendor name if available.
-    private static func usbProductName(for service: io_object_t) -> String? {
+    /// Walks up the IOKit parent chain until we hit a USB device node, then returns its
+    /// product/vendor name and `locationID`. The name can appear a tier below the node
+    /// carrying the locationID, so the walk keeps going until it has both or runs out.
+    private static func usbAttributes(
+        for service: io_object_t
+    ) -> (productName: String?, locationID: UInt32?) {
         var current: io_registry_entry_t = service
         IOObjectRetain(current)
         defer { IOObjectRelease(current) }
 
+        var productName: String?
+        var locationID: UInt32?
+
         for _ in 0..<8 {
-            if let name = stringProperty(current, key: "USB Product Name") { return name }
-            if let name = stringProperty(current, key: "USB Vendor Name") { return name }
+            if productName == nil {
+                productName = stringProperty(current, key: "USB Product Name")
+                    ?? stringProperty(current, key: "USB Vendor Name")
+            }
+            if locationID == nil {
+                locationID = numberProperty(current, key: "locationID")
+            }
+            if productName != nil, locationID != nil { break }
 
             var parent: io_registry_entry_t = 0
             guard IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent) == KERN_SUCCESS else {
-                return nil
+                break
             }
             IOObjectRelease(current)
             current = parent
         }
-        return nil
+        return (productName, locationID)
+    }
+
+    private static func numberProperty(_ service: io_object_t, key: String) -> UInt32? {
+        guard let raw = IORegistryEntryCreateCFProperty(
+            service,
+            key as CFString,
+            kCFAllocatorDefault,
+            0
+        ) else { return nil }
+        return (raw.takeRetainedValue() as? NSNumber)?.uint32Value
+    }
+
+    /// Re-resolves a saved camera selection. `AVCaptureDevice.uniqueID` embeds the USB
+    /// port the stick was in when it was picked, so an exact hit is only the happy path;
+    /// otherwise fall back to the one attached camera with the same vendor/product.
+    public static func resolveVideoUniqueID(saved: String) -> String? {
+        if AVCaptureDevice(uniqueID: saved) != nil { return saved }
+
+        guard let tail = USBLocationID.vendorProductTail(ofVideoUniqueID: saved) else { return nil }
+        let matches = videoDevices().filter {
+            USBLocationID.vendorProductTail(ofVideoUniqueID: $0.uniqueID) == tail
+        }
+        // Two identical sticks attached: nothing distinguishes them, so make the user pick.
+        guard matches.count == 1 else { return nil }
+        return matches[0].uniqueID
+    }
+
+    /// Re-resolves a saved serial selection. `/dev/cu.usbserial-NNNN` names encode the USB
+    /// port too, so when the saved node is gone, pair the serial bridge to the already
+    /// resolved capture chip by finding the port that hangs off the same hub — on a
+    /// NanoKVM-USB the two are functions of one hub, whichever Mac port it lands in.
+    public static func resolveSerialPath(saved: String, videoUniqueID: String) -> String? {
+        let ports = serialPorts()
+        if ports.contains(where: { $0.path == saved }) { return saved }
+
+        guard let cameraLocation = USBLocationID.locationID(ofVideoUniqueID: videoUniqueID) else {
+            return nil
+        }
+        let siblings = ports.filter { port in
+            guard let location = port.locationID else { return false }
+            return USBLocationID.areSiblings(cameraLocation, location)
+        }
+        guard siblings.count == 1 else { return nil }
+        return siblings[0].path
     }
 }
 #endif
